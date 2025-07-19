@@ -1,0 +1,3 @@
+[submodule "PyMammotion"]
+	path = PyMammotion
+	url = https://github.com/mikey0000/PyMammotion.git
