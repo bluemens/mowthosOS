@@ -1,3 +1,6 @@
 [submodule "PyMammotion"]
 	path = PyMammotion
 	url = https://github.com/mikey0000/PyMammotion.git
+[submodule "Mowthos-Cluster-Logic"]
+	path = Mowthos-Cluster-Logic
+	url = https://github.com/jackhobday/Mowthos-Cluster-Logic.git
