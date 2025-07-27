@@ -301,9 +301,15 @@ RUN apt-get update && apt-get install -y \
     libgdal-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Poetry
+RUN pip install poetry
+
+# Copy dependency files
+COPY pyproject.toml poetry.lock ./
+
 # Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN poetry config virtualenvs.create false && \
+    poetry install --no-interaction --no-ansi --without dev
 
 # Copy application code
 COPY . .

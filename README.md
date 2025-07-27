@@ -13,14 +13,19 @@ A FastAPI microservice that provides a REST API interface to the PyMammotion lib
 
 ## Installation
 
-1. Install the required dependencies:
+1. Install Poetry (if not already installed):
 ```bash
-pip install -r requirements.txt
+curl -sSL https://install.python-poetry.org | python3 -
 ```
 
-2. Run the FastAPI server:
+2. Install the required dependencies:
 ```bash
-python main.py
+poetry install
+```
+
+3. Run the FastAPI server:
+```bash
+poetry run python main.py
 ```
 
 The API will be available at `http://localhost:8000`
