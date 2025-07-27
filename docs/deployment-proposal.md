@@ -22,6 +22,19 @@ This proposal outlines the strategic steps needed to transform the current Mowth
 - ❌ **Testing Coverage**: Limited automated testing infrastructure
 - ❌ **Documentation**: Incomplete deployment and operations guides
 
+### 🚨 Critical Constraint: External Submodules
+
+**Both PyMammotion and Mowthos-Cluster-Logic are external git submodules and CANNOT be modified.**
+
+- **PyMammotion**: `https://github.com/mikey0000/PyMammotion.git` (read-only)
+- **Mowthos-Cluster-Logic**: `https://github.com/jackhobday/Mowthos-Cluster-Logic.git` (read-only)
+
+**Impact on Architecture:**
+- All customizations must use wrapper/adapter patterns
+- Integration happens through composition, not modification
+- Custom features added in our own service layer
+- Changes to submodules require upstream contributions
+
 ## Proposed Architecture Evolution
 
 ### Phase 1: Foundation Consolidation (Weeks 1-2)

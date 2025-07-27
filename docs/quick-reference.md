@@ -2,6 +2,21 @@
 
 **Essential functions and usage patterns for developers**
 
+## 🚨 CRITICAL WARNING
+
+### DO NOT MODIFY External Submodules
+
+**NEVER edit files in these directories:**
+- ❌ `PyMammotion/` - External submodule (read-only)
+- ❌ `Mowthos-Cluster-Logic/` - External submodule (read-only)
+
+**Why?** These are git submodules pointing to external repositories. Any modifications will be:
+- Lost during updates
+- Cause merge conflicts
+- Break compatibility
+
+**See [Development Guidelines](development-guidelines.md) for safe integration patterns.**
+
 ## PyMammotion - Core Functions
 
 ### Device Management

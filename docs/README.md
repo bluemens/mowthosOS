@@ -5,12 +5,18 @@
 ## Table of Contents
 
 1. [System Overview](#system-overview)
-2. [PyMammotion Component](#pymammotion-component)
-3. [Mowthos-Cluster-Logic Component](#mowthos-cluster-logic-component)
+2. [PyMammotion Component](#pymammotion-component) ⚠️ *External Submodule - Do Not Modify*
+3. [Mowthos-Cluster-Logic Component](#mowthos-cluster-logic-component) ⚠️ *External Submodule - Do Not Modify*
 4. [Integration Architecture](#integration-architecture)
 5. [API Reference](#api-reference)
 6. [Deployment Guide](#deployment-guide)
 7. [Future Enhancements](#future-enhancements)
+
+### 📚 Additional Documentation
+- [Development Guidelines](development-guidelines.md) - **Required reading for developers**
+- [Deployment Proposal](deployment-proposal.md) - Professional deployment roadmap
+- [Quick Reference](quick-reference.md) - Essential functions and patterns
+- [Submodule Warning](SUBMODULE-WARNING.md) - Critical warnings about external dependencies
 
 ---
 
@@ -51,6 +57,17 @@ MowthosOS is a sophisticated backend system designed to manage Mammotion robotic
 ---
 
 ## PyMammotion Component
+
+### ⚠️ CRITICAL WARNING: DO NOT MODIFY PyMammotion
+
+**PyMammotion is an external git submodule and MUST NOT be modified directly.**
+
+- **External Repository**: `https://github.com/mikey0000/PyMammotion.git`
+- **Read-Only**: Treat as a dependency, not part of our codebase
+- **Updates**: Will overwrite any local modifications
+- **Contributing**: Changes should be submitted to the original repository
+
+See [Development Guidelines](development-guidelines.md) for detailed integration patterns.
 
 ### Overview
 
@@ -220,6 +237,17 @@ def monitor_mower_state(device):
 ---
 
 ## Mowthos-Cluster-Logic Component
+
+### ⚠️ CRITICAL WARNING: DO NOT MODIFY Mowthos-Cluster-Logic
+
+**Mowthos-Cluster-Logic is an external git submodule and MUST NOT be modified directly.**
+
+- **External Repository**: `https://github.com/jackhobday/Mowthos-Cluster-Logic.git`
+- **Read-Only**: Treat as a dependency, not part of our codebase
+- **Updates**: Will overwrite any local modifications
+- **Contributing**: Changes should be submitted to the original repository
+
+See [Development Guidelines](development-guidelines.md) for detailed integration patterns.
 
 ### Overview
 
