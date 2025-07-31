@@ -742,9 +742,11 @@ curl http://localhost:8000/health
 ### Manual Deployment
 
 ```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-pip install -r Mowthos-Cluster-Logic/requirements.txt
+# 1. Install Poetry (if not already installed)
+curl -sSL https://install.python-poetry.org | python3 -
+
+# 2. Install dependencies
+poetry install
 
 # 2. Initialize submodules
 git submodule update --init --recursive

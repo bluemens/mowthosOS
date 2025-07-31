@@ -388,9 +388,11 @@ git clone --recursive https://github.com/your-org/mowthosos
 cd mowthosos
 
 # 2. Install dependencies
-pip install -r requirements.txt
-pip install -r PyMammotion/requirements.txt
-pip install -r Mowthos-Cluster-Logic/requirements.txt
+# Install Poetry if not already installed
+curl -sSL https://install.python-poetry.org | python3 -
+
+# Install dependencies
+poetry install
 
 # 3. Set up environment
 cp .env.example .env
