@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     database_url: Optional[str] = None
     redis_url: Optional[str] = None
     
-    # External API settings (for future use)
+    # External API settings
     mapbox_access_token: Optional[str] = None
     stripe_secret_key: Optional[str] = None
     stripe_publishable_key: Optional[str] = None
@@ -58,9 +58,8 @@ class Settings(BaseSettings):
     rate_limit_window: int = 60
     
     class Config:
-        env_file = ".env"
+        env_file = ".env.local"
         case_sensitive = False
-        env_prefix = "MOWTHOS_"
 
 # Create settings instance
 settings = Settings() 

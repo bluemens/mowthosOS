@@ -3,19 +3,14 @@
 from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 import json
-import os
-import sys
 import logging
-
-# Add Mowthos-Cluster-Logic to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../../Mowthos-Cluster-Logic'))
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from geopy.distance import geodesic
 
 from ..base import BaseService
-from .engine import ClusterEngine
+from .engine import ClusterEngine, register_host_home, register_neighbor_home, discover_neighbors_for_host, find_qualified_host_for_neighbor, ensure_host_homes_csv, ensure_neighbor_homes_csv
 from .mapbox import MapboxService
 from ...models.schemas import (
     Cluster, Address, HostRegistration, NeighborJoinRequest,
@@ -23,12 +18,6 @@ from ...models.schemas import (
 )
 from ...core.config import settings
 from ...core.database import get_db
-
-# Import from Mowthos-Cluster-Logic
-from app.models import User as MowthosUser, Cluster as MowthosCluster, LawnBoundary
-from app.schemas import HostRegistrationRequest, JoinClusterRequest, ClusterAssignmentResponse
-from app.services.cluster_service import ClusterService as MowthosClusterService
-from app.services.cluster_engine import ClusterEngine as MowthosClusterEngine
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +29,6 @@ class ClusterService(BaseService):
         super().__init__("cluster")
         self.engine = ClusterEngine()
         self.mapbox = MapboxService(settings.mapbox_access_token)
-        
-        # Initialize wrapped Mowthos services
-        self.mowthos_service = MowthosClusterService()
-        self.mowthos_engine = MowthosClusterEngine()
         
         # Configuration
         self.max_cluster_capacity = 5
@@ -88,6 +73,18 @@ class ClusterService(BaseService):
             if not validated:
                 raise Exception("Invalid address")
             
+            # Use function to register host home
+            host_result = register_host_home(
+                address.street,
+                address.city,
+                address.state,
+                validated.get('latitude'),
+                validated.get('longitude')
+            )
+            
+            if not host_result.get('success'):
+                raise Exception(f"Failed to register host: {host_result.get('message')}")
+            
             # Create cluster
             cluster_id = f"cluster_{user_id}_{datetime.now().timestamp()}"
             cluster = Cluster(
@@ -124,137 +121,150 @@ class ClusterService(BaseService):
         Returns:
             List of neighbor addresses
         """
-        cluster = await self._get_cluster(cluster_id)
-        if not cluster:
-            raise Exception("Cluster not found")
-        
-        # Get host coordinates
-        host_lat = cluster.host_address.latitude
-        host_lon = cluster.host_address.longitude
-        
-        # Use cluster engine to find neighbors
-        neighbors = await self.engine.find_neighbors_within_radius(
-            host_lat,
-            host_lon,
-            self.max_distance_meters
-        )
-        
-        # Filter out homes across roads
-        filtered_neighbors = []
-        for neighbor in neighbors:
-            # Check if road exists between host and neighbor
-            has_road = await self.mapbox.check_road_between_points(
-                host_lat, host_lon,
-                neighbor.latitude, neighbor.longitude
-            )
+        try:
+            # Get cluster details
+            cluster = await self._get_cluster(cluster_id)
+            if not cluster:
+                return []
             
-            if not has_road:
-                filtered_neighbors.append(neighbor)
-                
-        self.logger.info(f"Found {len(filtered_neighbors)} qualified neighbors for cluster {cluster_id}")
-        return filtered_neighbors
-        
+            # Use engine to discover neighbors
+            host_address = f"{cluster.host_address.street}, {cluster.host_address.city}, {cluster.host_address.state}"
+            neighbor_addresses = discover_neighbors_for_host(host_address)
+            
+            # Convert to Address objects
+            neighbors = []
+            for addr_str in neighbor_addresses:
+                # Parse address string (format: "street, city, state")
+                parts = addr_str.split(', ')
+                if len(parts) >= 3:
+                    address = Address(
+                        address_id=f"neighbor_{len(neighbors)}",
+                        street=parts[0],
+                        city=parts[1],
+                        state=parts[2],
+                        zip_code=parts[3] if len(parts) > 3 else "",
+                        latitude=0.0,  # Would be geocoded in production
+                        longitude=0.0
+                    )
+                    neighbors.append(address)
+            
+            self.logger.info(f"Found {len(neighbors)} neighbors for cluster {cluster_id}")
+            return neighbors
+            
+        except Exception as e:
+            self.logger.error(f"Failed to find neighbors: {str(e)}")
+            return []
+            
     async def join_cluster(self, cluster_id: str, address: Address, user_id: int) -> ClusterAssignment:
-        """Join an existing cluster as a neighbor.
+        """Join a cluster.
         
         Args:
             cluster_id: ID of the cluster to join
-            address: Address of the neighbor
-            user_id: ID of the user joining
+            address: Address of the joining user
+            user_id: ID of the joining user
             
         Returns:
             Cluster assignment information
         """
-        cluster = await self._get_cluster(cluster_id)
-        if not cluster:
-            raise Exception("Cluster not found")
-        
-        # Check capacity
-        if len(cluster.members) >= cluster.max_capacity:
-            raise Exception("Cluster is at full capacity")
-        
-        # Validate address is within range
-        distance = geodesic(
-            (cluster.host_address.latitude, cluster.host_address.longitude),
-            (address.latitude, address.longitude)
-        ).meters
-        
-        if distance > self.max_distance_meters:
-            raise Exception(f"Address is too far from cluster host ({distance:.0f}m)")
-        
-        # Check for road between addresses
-        has_road = await self.mapbox.check_road_between_points(
-            cluster.host_address.latitude, cluster.host_address.longitude,
-            address.latitude, address.longitude
-        )
-        
-        if has_road:
-            raise Exception("Cannot join cluster - road detected between properties")
-        
-        # Add to cluster
-        cluster.members.append(user_id)
-        
-        assignment = ClusterAssignment(
-            cluster_id=cluster_id,
-            user_id=user_id,
-            role="neighbor",
-            assigned_at=datetime.now(),
-            distance_to_host=distance
-        )
-        
-        await self._update_cluster(cluster)
-        
-        self.logger.info(f"User {user_id} joined cluster {cluster_id}")
-        return assignment
-        
+        try:
+            # Check if cluster exists and has capacity
+            cluster = await self._get_cluster(cluster_id)
+            if not cluster:
+                raise Exception("Cluster not found")
+            
+            if len(cluster.members) >= cluster.max_capacity:
+                raise Exception("Cluster is at maximum capacity")
+            
+            # Use engine to register neighbor home
+            neighbor_result = register_neighbor_home(
+                address.street,
+                address.city,
+                address.state
+            )
+            
+            if not neighbor_result.get('success'):
+                raise Exception(f"Failed to register neighbor: {neighbor_result.get('message')}")
+            
+            # Find qualified host for this neighbor
+            neighbor_address = f"{address.street}, {address.city}, {address.state}"
+            qualified_hosts = find_qualified_host_for_neighbor(neighbor_address)
+            
+            # Check if our target cluster is in the qualified hosts
+            target_cluster_found = False
+            for host_addr in qualified_hosts:
+                if cluster_id in host_addr:  # Simple check - would be more sophisticated in production
+                    target_cluster_found = True
+                    break
+            
+            if not target_cluster_found:
+                raise Exception("Address is not within range of this cluster")
+            
+            # Add user to cluster
+            cluster.members.append(user_id)
+            await self._update_cluster(cluster)
+            
+            assignment = ClusterAssignment(
+                cluster_id=cluster_id,
+                user_id=user_id,
+                assigned_at=datetime.now(),
+                status="active"
+            )
+            
+            self.logger.info(f"User {user_id} joined cluster {cluster_id}")
+            return assignment
+            
+        except Exception as e:
+            self.logger.error(f"Failed to join cluster: {str(e)}")
+            raise
+            
     async def optimize_routes(self, cluster_id: str) -> RouteOptimization:
-        """Optimize mowing routes for cluster efficiency.
+        """Optimize routes for a cluster.
         
         Args:
             cluster_id: ID of the cluster
             
         Returns:
-            Optimized route information
+            Route optimization results
         """
-        cluster = await self._get_cluster(cluster_id)
-        if not cluster:
-            raise Exception("Cluster not found")
-        
-        # Get all member addresses
-        member_addresses = await self._get_member_addresses(cluster)
-        
-        # Calculate optimal route using traveling salesman approach
-        route = await self._calculate_optimal_route(member_addresses)
-        
-        # Estimate time and battery usage
-        total_distance = 0
-        for i in range(len(route) - 1):
-            distance = geodesic(
-                (route[i].latitude, route[i].longitude),
-                (route[i+1].latitude, route[i+1].longitude)
-            ).meters
-            total_distance += distance
-        
-        # Rough estimates
-        travel_time_minutes = (total_distance / 1000) * 15  # 15 min per km travel
-        mowing_time_minutes = len(member_addresses) * 45  # 45 min per lawn
-        total_time_minutes = travel_time_minutes + mowing_time_minutes
-        battery_usage_percent = min(100, total_time_minutes * 0.5)  # 0.5% per minute
-        
-        optimization = RouteOptimization(
-            cluster_id=cluster_id,
-            route_order=[addr.address_id for addr in route],
-            total_distance_m=total_distance,
-            estimated_time_minutes=total_time_minutes,
-            estimated_battery_usage=battery_usage_percent,
-            optimized_at=datetime.now()
-        )
-        
-        self.logger.info(f"Optimized route for cluster {cluster_id}: {total_distance}m, {total_time_minutes}min")
-        return optimization
-        
+        try:
+            # Get cluster and member addresses
+            cluster = await self._get_cluster(cluster_id)
+            if not cluster:
+                raise Exception("Cluster not found")
+            
+            addresses = await self._get_member_addresses(cluster)
+            if not addresses:
+                raise Exception("No addresses found for cluster")
+            
+            # Use engine for route optimization
+            optimal_route = await self._calculate_optimal_route(addresses)
+            
+            # Calculate total distance
+            total_distance = 0
+            for i in range(len(optimal_route) - 1):
+                distance = geodesic(
+                    (optimal_route[i].latitude, optimal_route[i].longitude),
+                    (optimal_route[i + 1].latitude, optimal_route[i + 1].longitude)
+                ).meters
+                total_distance += distance
+            
+            optimization = RouteOptimization(
+                cluster_id=cluster_id,
+                route=optimal_route,
+                total_distance_meters=total_distance,
+                estimated_duration_minutes=total_distance / 100,  # Rough estimate
+                optimized_at=datetime.now()
+            )
+            
+            self.logger.info(f"Optimized route for cluster {cluster_id}: {total_distance:.0f}m")
+            return optimization
+            
+        except Exception as e:
+            self.logger.error(f"Failed to optimize routes: {str(e)}")
+            raise
+            
     async def get_cluster_stats(self, cluster_id: str) -> ClusterStats:
-        """Get statistics for a cluster.
+        """Get cluster statistics.
         
         Args:
             cluster_id: ID of the cluster
@@ -262,83 +272,126 @@ class ClusterService(BaseService):
         Returns:
             Cluster statistics
         """
-        cluster = await self._get_cluster(cluster_id)
-        if not cluster:
-            raise Exception("Cluster not found")
-        
-        # Calculate stats
-        member_count = len(cluster.members)
-        potential_savings = member_count * 50  # $50 average savings per member
-        
-        # Get route optimization if available
-        route = await self._get_latest_route(cluster_id)
-        
-        stats = ClusterStats(
-            cluster_id=cluster_id,
-            member_count=member_count,
-            capacity_utilization=member_count / cluster.max_capacity,
-            average_distance_m=route.total_distance_m / member_count if route else 0,
-            estimated_monthly_savings=potential_savings,
-            total_area_covered_sqm=member_count * 500,  # Assume 500 sqm average lawn
-            active_mowers=0,  # Would check actual mower status
-            completed_sessions_month=0,  # Would query history
-            last_updated=datetime.now()
-        )
-        
-        return stats
-        
+        try:
+            cluster = await self._get_cluster(cluster_id)
+            if not cluster:
+                raise Exception("Cluster not found")
+            
+            # Get member addresses
+            addresses = await self._get_member_addresses(cluster)
+            
+            # Calculate coverage area
+            coverage_info = await self.calculate_coverage(addresses)
+            
+            stats = ClusterStats(
+                cluster_id=cluster_id,
+                member_count=len(cluster.members),
+                max_capacity=cluster.max_capacity,
+                coverage_area_sqm=coverage_info.get('total_area', 0),
+                average_distance_km=coverage_info.get('average_distance', 0),
+                efficiency_score=coverage_info.get('coverage_efficiency', 0),
+                last_updated=datetime.now()
+            )
+            
+            return stats
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get cluster stats: {str(e)}")
+            raise
+            
     async def suggest_clusters(self, address: Address) -> List[Cluster]:
-        """Suggest nearby clusters for an address.
+        """Suggest clusters for an address.
         
         Args:
             address: Address to find clusters for
             
         Returns:
-            List of nearby clusters with availability
+            List of suggested clusters
         """
-        # Find all clusters within range
-        nearby_clusters = []
-        
-        # This would query all active clusters from database
-        # For now, return empty list
-        # TODO: Implement actual cluster search
-        
-        return nearby_clusters
-        
+        try:
+            # Use engine to find qualified hosts
+            address_str = f"{address.street}, {address.city}, {address.state}"
+            qualified_hosts = find_qualified_host_for_neighbor(address_str)
+            
+            # Convert to cluster suggestions
+            suggestions = []
+            for host_addr in qualified_hosts:
+                # Create a mock cluster for suggestion
+                # In production, this would query actual clusters
+                suggestion = Cluster(
+                    cluster_id=f"suggested_{len(suggestions)}",
+                    name=f"Cluster near {host_addr}",
+                    host_user_id=0,  # Would be actual host ID
+                    host_address=address,
+                    members=[0],  # Would be actual member IDs
+                    max_capacity=self.max_cluster_capacity,
+                    created_at=datetime.now(),
+                    is_active=True
+                )
+                suggestions.append(suggestion)
+            
+            return suggestions
+            
+        except Exception as e:
+            self.logger.error(f"Failed to suggest clusters: {str(e)}")
+            return []
+            
     async def calculate_coverage(self, addresses: List[Address]) -> Dict[str, Any]:
-        """Calculate coverage area and statistics for addresses.
+        """Calculate coverage area for addresses.
         
         Args:
-            addresses: List of addresses to analyze
+            addresses: List of addresses to calculate coverage for
             
         Returns:
-            Coverage statistics
+            Coverage information
         """
-        if not addresses:
-            return {"total_area": 0, "clusters_possible": 0}
-        
-        # Group addresses into potential clusters
-        clusters = await self._group_into_clusters(addresses)
-        
-        total_area = len(addresses) * 500  # Assume 500 sqm per address
-        
-        coverage = {
-            "total_addresses": len(addresses),
-            "total_area_sqm": total_area,
-            "clusters_possible": len(clusters),
-            "average_cluster_size": len(addresses) / len(clusters) if clusters else 0,
-            "coverage_efficiency": 0.8,  # 80% efficiency estimate
-            "unserviceable_addresses": 0  # Addresses too isolated
-        }
-        
-        return coverage
+        try:
+            if not addresses:
+                return {
+                    "total_area": 0,
+                    "average_distance": 0,
+                    "coverage_efficiency": 0,
+                    "unserviceable_addresses": 0
+                }
+            
+            # Calculate total area (simplified - would use actual property boundaries)
+            total_area = len(addresses) * 1000  # 1000 sqm per property estimate
+            
+            # Calculate average distance between addresses
+            total_distance = 0
+            distance_count = 0
+            
+            for i in range(len(addresses)):
+                for j in range(i + 1, len(addresses)):
+                    distance = geodesic(
+                        (addresses[i].latitude, addresses[i].longitude),
+                        (addresses[j].latitude, addresses[j].longitude)
+                    ).kilometers
+                    total_distance += distance
+                    distance_count += 1
+            
+            average_distance = total_distance / distance_count if distance_count > 0 else 0
+            
+            return {
+                "total_area": total_area,
+                "average_distance": average_distance,
+                "coverage_efficiency": 0.8,  # 80% efficiency estimate
+                "unserviceable_addresses": 0  # Addresses too isolated
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to calculate coverage: {str(e)}")
+            return {
+                "total_area": 0,
+                "average_distance": 0,
+                "coverage_efficiency": 0,
+                "unserviceable_addresses": 0
+            }
         
     # Private helper methods
     
     def _ensure_csv_files(self) -> None:
         """Ensure required CSV files exist."""
-        # This is handled by the Mowthos-Cluster-Logic engine
-        from app.services.cluster_engine import ensure_host_homes_csv, ensure_neighbor_homes_csv
         ensure_host_homes_csv()
         ensure_neighbor_homes_csv()
         
