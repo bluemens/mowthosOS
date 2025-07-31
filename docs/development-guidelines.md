@@ -6,24 +6,29 @@
 
 ### External Dependencies Are Read-Only
 
-**Both PyMammotion and Mowthos-Cluster-Logic are git submodules pointing to external repositories and MUST NOT be modified directly.**
+**PyMammotion is a git submodule pointing to an external repository and MUST NOT be modified directly.**
 
 ```
-⚠️  WARNING: NEVER EDIT FILES IN THESE DIRECTORIES:
+⚠️  WARNING: NEVER EDIT FILES IN THIS DIRECTORY:
    - PyMammotion/
-   - Mowthos-Cluster-Logic/
+```
+
+**✅ CLUSTER LOGIC IS NOW INTEGRATED:**
+```
+✅  MIGRATED: Clustering logic is now integrated in src/services/cluster/
+✅  STATUS: No longer dependent on external Mowthos-Cluster-Logic submodule
+✅  BENEFITS: Direct control, easier maintenance, better performance
 ```
 
 **Why external submodules should not be altered:**
 
-1. **Git Submodules**: Both are git submodules from external repositories:
+1. **Git Submodules**: PyMammotion is a git submodule from external repository:
    - PyMammotion: `https://github.com/mikey0000/PyMammotion.git`
-   - Mowthos-Cluster-Logic: `https://github.com/jackhobday/Mowthos-Cluster-Logic.git`
-2. **External Ownership**: We do not own or control these repositories
+2. **External Ownership**: We do not own or control this repository
 3. **Update Conflicts**: Direct modifications will cause conflicts when updating
 4. **Lost Changes**: Your changes will be overwritten during submodule updates
 5. **Breaking Compatibility**: Modifications may break compatibility with upstream updates
-6. **Open Source Contribution**: Changes should be contributed back to the original projects
+6. **Open Source Contribution**: Changes should be contributed back to the original project
 
 ### What to Do Instead
 
@@ -98,282 +103,347 @@ class MowerService:
 from pymammotion.data.model.enums import ConnectionPreference
 
 class MowthosMAmmotionConfig:
-    """Configuration adapter for PyMammotion"""
-    
-    @staticmethod
-    def get_connection_preference(device_type: str) -> ConnectionPreference:
-        """Custom logic for connection preferences"""
-        preferences = {
-            "luba": ConnectionPreference.WIFI,
-            "luba2": ConnectionPreference.EITHER,
-            "yuka": ConnectionPreference.BLUETOOTH
-        }
-        return preferences.get(device_type.lower(), ConnectionPreference.EITHER)
-```
-
-#### ❌ NEVER Do This:
-
-```python
-# ❌ DON'T: Modify PyMammotion files directly
-# File: PyMammotion/pymammotion/mammotion/devices/mammotion.py
-
-class Mammotion:  # ❌ DON'T EDIT THIS CLASS
-    def __init__(self):
-        # ❌ DON'T ADD CUSTOM CODE HERE
-        pass
-        
-    def login_and_initiate_cloud(self, account, password):
-        # ❌ DON'T MODIFY EXISTING METHODS
-        pass
-```
-
-### Updating PyMammotion
-
-**When PyMammotion needs to be updated:**
-
-```bash
-# 1. Check for updates
-cd PyMammotion
-git fetch origin
-git log --oneline HEAD..origin/main  # See what's new
-
-# 2. Update to latest version
-git checkout main
-git pull origin main
-
-# 3. Update the parent repository
-cd ..
-git add PyMammotion
-git commit -m "Update PyMammotion to latest version"
-
-# 4. Test compatibility
-python -m pytest tests/test_mammotion_integration.py
-```
-
-### Contributing to PyMammotion
-
-**If you need features in PyMammotion:**
-
-1. **Fork the original repository**: `https://github.com/mikey0000/PyMammotion`
-2. **Create a feature branch**: `git checkout -b feature/my-improvement`
-3. **Make your changes**: Follow their contributing guidelines
-4. **Submit a pull request**: To the original PyMammotion repository
-5. **Wait for acceptance**: Don't modify the submodule until merged
-6. **Update submodule**: Once your PR is merged upstream
-
-```bash
-# Contributing workflow
-git clone https://github.com/mikey0000/PyMammotion.git
-cd PyMammotion
-git checkout -b feature/my-improvement
-
-# Make your changes
-# Test your changes
-# Submit PR to original repository
-
-# After PR is merged, update our submodule
-cd ../mowthosos
-git submodule update --remote PyMammotion
-```
-
-## Development Workflow
-
-### 1. Repository Structure
-
-```
-mowthosos/
-├── PyMammotion/           # 🚨 DO NOT MODIFY - External submodule
-├── Mowthos-Cluster-Logic/ # 🚨 DO NOT MODIFY - External submodule  
-├── src/                   # ✅ Our code - modify freely
-│   ├── services/
-│   │   ├── mower/        # ✅ Wrappers around PyMammotion
-│   │   ├── cluster/      # ✅ Wrappers around cluster logic
-│   │   └── payment/      # ✅ Our payment system
-│   └── api/              # ✅ Our API layer
-├── tests/                # ✅ Our tests
-├── docs/                 # ✅ Our documentation
-└── main.py              # ✅ Our main application
-```
-
-### 2. Integration Patterns
-
-**Use these patterns to integrate with PyMammotion safely:**
-
-```python
-# Pattern 1: Facade Pattern
-class MowerFacade:
-    """Simplified interface to PyMammotion"""
+    """Configuration wrapper for PyMammotion settings"""
     
     def __init__(self):
-        self._mammotion = Mammotion()  # Use, don't modify
+        self.connection_preference = ConnectionPreference.WIFI
+        self.timeout_seconds = 30
+        self.retry_attempts = 3
     
-    async def simple_start_mowing(self, device_name: str) -> bool:
-        """Simplified mowing start"""
-        try:
-            await self._mammotion.send_command(device_name, "start_job")
-            return True
-        except Exception:
-            return False
-
-# Pattern 2: Adapter Pattern  
-class MowerAdapter:
-    """Adapt PyMammotion to our data models"""
-    
-    def __init__(self, mammotion: Mammotion):
-        self._mammotion = mammotion
-    
-    def to_our_status_format(self, device_name: str) -> Dict:
-        """Convert PyMammotion status to our format"""
-        device = self._mammotion.get_device_by_name(device_name)
-        
+    def get_mammotion_config(self) -> Dict[str, Any]:
+        """Get configuration for PyMammotion without modifying it"""
         return {
-            "id": device_name,
-            "status": "online" if device.mower_state.online else "offline",
-            "battery": device.mower_state.report_data.dev.battery_val,
-            # Our custom fields
-            "mowthosos_cluster_id": self._get_cluster_id(device_name)
+            "connection_preference": self.connection_preference,
+            "timeout": self.timeout_seconds,
+            "retries": self.retry_attempts
         }
-
-# Pattern 3: Decorator Pattern
-class MowerServiceDecorator:
-    """Add MowthosOS features to PyMammotion"""
-    
-    def __init__(self, mammotion: Mammotion):
-        self._mammotion = mammotion
-        self._usage_tracker = UsageTracker()
-    
-    async def send_command_with_tracking(self, device_name: str, command: str):
-        """Send command and track usage for billing"""
-        # Track the command for billing
-        self._usage_tracker.log_command(device_name, command)
-        
-        # Use PyMammotion unchanged
-        return await self._mammotion.send_command(device_name, command)
 ```
 
-### 3. Testing Integration
+#### ❌ Incorrect Approaches:
 
-**Test your wrappers, not PyMammotion itself:**
-
+**1. Direct Modification**
 ```python
-# tests/test_mower_service.py
+# ❌ NEVER DO THIS
+# Don't modify PyMammotion files directly
+from pymammotion.mammotion.devices.mammotion import Mammotion
+
+# ❌ Don't edit PyMammotion source code
+class ModifiedMammotion(Mammotion):
+    def __init__(self):
+        super().__init__()
+        # Don't override PyMammotion internals
+```
+
+**2. Forking External Repositories**
+```python
+# ❌ Don't fork and modify external repos
+# Instead, use the original and create wrappers
+from pymammotion.mammotion.devices.mammotion import Mammotion  # ✅ Use original
+```
+
+**3. Copying External Code**
+```python
+# ❌ Don't copy PyMammotion code into our codebase
+# Instead, use it as a dependency
+```
+
+### Cluster Logic Migration
+
+#### ✅ Current Status: Integrated Clustering
+
+**The clustering logic has been successfully migrated from Mowthos-Cluster-Logic and is now fully integrated into our codebase.**
+
+**Location**: `src/services/cluster/`
+
+**Components**:
+- `service.py` - Main cluster service interface
+- `engine.py` - Core clustering algorithms and functions
+- `mapbox.py` - Address validation and geocoding
+- `__init__.py` - Module initialization
+
+**Benefits of Migration**:
+- ✅ Direct control over clustering algorithms
+- ✅ Simplified architecture and imports
+- ✅ Easy customization and maintenance
+- ✅ No external dependencies for core logic
+- ✅ Better performance and reliability
+
+**Key Functions Now Available**:
+```python
+from src.services.cluster.engine import (
+    register_host_home, register_neighbor_home,
+    discover_neighbors_for_host, find_qualified_host_for_neighbor,
+    ensure_host_homes_csv, ensure_neighbor_homes_csv
+)
+
+# Use these functions directly in your code
+result = register_host_home("123 Main St", "Rochester", "MN", 44.0123, -92.1234)
+neighbors = discover_neighbors_for_host("123 Main St, Rochester, MN")
+```
+
+### Project Structure
+
+```
+mowthosOS/
+├── src/
+│   ├── api/                    # FastAPI routes and endpoints
+│   ├── core/                   # Core configuration and utilities
+│   ├── models/                 # Data models and schemas
+│   └── services/               # Business logic services
+│       ├── mower/              # Mower control (PyMammotion wrapper)
+│       └── cluster/            # ✅ INTEGRATED: Clustering logic
+│           ├── service.py      # Main cluster service
+│           ├── engine.py       # Core clustering algorithms
+│           └── mapbox.py       # Address validation
+├── PyMammotion/                # 🚨 DO NOT MODIFY - External submodule
+├── tests/                      # Test suite
+├── docs/                       # Documentation
+└── requirements.txt            # Dependencies
+```
+
+### Development Workflow
+
+#### 1. Setting Up Development Environment
+
+```bash
+# Clone repository with submodules
+git clone --recursive https://github.com/your-org/mowthosOS.git
+cd mowthosOS
+
+# Install dependencies
+poetry install
+
+# Initialize submodules (PyMammotion only)
+git submodule update --init --recursive
+
+# Set up environment
+cp .env.local.example .env.local
+# Edit .env.local with your configuration
+```
+
+#### 2. Working with PyMammotion
+
+**✅ Correct Pattern:**
+```python
+# src/services/mower/service.py
+from pymammotion.mammotion.devices.mammotion import Mammotion
+
+class MowerService:
+    def __init__(self):
+        # Use PyMammotion as-is
+        self._mammotion = Mammotion()
+    
+    async def start_mowing(self, device_name: str):
+        # Use PyMammotion methods directly
+        await self._mammotion.send_command(device_name, "start_job")
+        
+        # Add our custom logic
+        await self._log_mowing_start(device_name)
+        await self._notify_cluster_members(device_name)
+```
+
+**❌ Incorrect Pattern:**
+```python
+# Don't modify PyMammotion files
+# Don't copy PyMammotion code into our codebase
+# Don't override PyMammotion internals
+```
+
+#### 3. Working with Cluster Logic
+
+**✅ Correct Pattern:**
+```python
+# src/services/cluster/service.py
+from .engine import register_host_home, discover_neighbors_for_host
+
+class ClusterService:
+    async def register_host(self, address: Address, user_id: int):
+        # Use our integrated functions
+        result = register_host_home(
+            address.street, address.city, address.state,
+            address.latitude, address.longitude
+        )
+        
+        # Add our custom logic
+        await self._create_cluster_record(result, user_id)
+```
+
+#### 4. Testing
+
+**Test PyMammotion Integration:**
+```python
+# tests/test_mower/test_pymammotion_integration.py
 import pytest
-from unittest.mock import Mock, AsyncMock
-from src.services.mower.service import MowerService
+from pymammotion.mammotion.devices.mammotion import Mammotion
 
-class TestMowerService:
-    def test_mower_service_initialization(self):
-        """Test our service initializes correctly"""
-        service = MowerService()
-        assert service._mammotion is not None
-        assert hasattr(service, '_cache')
-    
-    @pytest.mark.asyncio
-    async def test_enhanced_status(self):
-        """Test our enhanced status method"""
-        service = MowerService()
-        
-        # Mock PyMammotion response
-        mock_device = Mock()
-        mock_device.mower_state.online = True
-        mock_device.mower_state.report_data.dev.battery_val = 85
-        
-        service._mammotion.get_device_by_name = Mock(return_value=mock_device)
-        
-        # Test our wrapper
-        status = await service.get_enhanced_status("test_device")
-        
-        assert status.online is True
-        assert status.battery_level == 85
+def test_pymammotion_connection():
+    """Test PyMammotion integration without modifying it"""
+    mammotion = Mammotion()
+    # Test PyMammotion functionality as-is
+    assert mammotion is not None
 ```
 
-### 4. Error Handling
-
-**Handle PyMammotion errors gracefully:**
-
+**Test Cluster Logic:**
 ```python
-class MowerErrorHandler:
-    """Handle PyMammotion errors in MowthosOS context"""
-    
-    async def safe_execute_command(self, mammotion: Mammotion, device_name: str, command: str):
-        """Execute command with proper error handling"""
-        try:
-            await mammotion.send_command(device_name, command)
-            return {"success": True, "message": "Command executed"}
-            
-        except ConnectionError:
-            return {"success": False, "error": "Device offline"}
-            
-        except Exception as e:
-            # Log the error for debugging
-            logger.error(f"PyMammotion error: {e}")
-            return {"success": False, "error": "Internal error"}
+# tests/test_cluster/test_integrated_functions.py
+from src.services.cluster.engine import register_host_home
+
+def test_host_registration():
+    """Test our integrated clustering functions"""
+    result = register_host_home("123 Main St", "Rochester", "MN", 44.0123, -92.1234)
+    assert result["success"] is True
 ```
 
-## Code Review Checklist
+### Code Review Checklist
 
-**Before submitting any code, ensure:**
+#### ✅ Pre-Submission Checklist
 
+**External Dependencies:**
 - [ ] ✅ No files in `PyMammotion/` directory are modified
-- [ ] ✅ No files in `Mowthos-Cluster-Logic/` directory are modified  
-- [ ] ✅ All PyMammotion integration uses wrapper/adapter patterns
-- [ ] ✅ Tests mock PyMammotion instead of testing it directly
-- [ ] ✅ Error handling wraps PyMammotion exceptions
-- [ ] ✅ Documentation explains integration patterns used
+- [ ] ✅ No PyMammotion code copied into our codebase
+- [ ] ✅ All PyMammotion usage is through proper imports
+- [ ] ✅ Wrapper services created for custom functionality
 
-## Emergency Procedures
+**Cluster Logic:**
+- [ ] ✅ All clustering functions use our integrated logic
+- [ ] ✅ No references to external Mowthos-Cluster-Logic
+- [ ] ✅ Tests pass for integrated clustering functions
+- [ ] ✅ Documentation updated to reflect migration
 
-### If PyMammotion Was Accidentally Modified
+**General Code Quality:**
+- [ ] ✅ All tests pass
+- [ ] ✅ Code follows PEP 8 style guidelines
+- [ ] ✅ Type hints added where appropriate
+- [ ] ✅ Documentation updated for any API changes
+- [ ] ✅ No hardcoded secrets or credentials
+- [ ] ✅ Error handling implemented
+- [ ] ✅ Logging added for debugging
 
+#### 🚨 Critical Review Points
+
+**1. External Submodule Protection:**
 ```bash
-# 1. Check what was changed
-cd PyMammotion
-git status
-git diff
-
-# 2. Revert all changes
-git checkout .
-git clean -fd
-
-# 3. Verify clean state
-git status  # Should show "working tree clean"
-
-# 4. Go back to parent directory
-cd ..
-
-# 5. Check submodule status
-git submodule status
+# Check for any modifications to PyMammotion
+git status PyMammotion/
+# Should show "working tree clean" or only submodule updates
 ```
 
-### If Submodule is Broken
+**2. Import Patterns:**
+```python
+# ✅ Correct: Import from PyMammotion
+from pymammotion.mammotion.devices.mammotion import Mammotion
 
-```bash
-# 1. Remove broken submodule
-git submodule deinit PyMammotion
-rm -rf .git/modules/PyMammotion
-git rm PyMammotion
+# ✅ Correct: Use our integrated functions
+from src.services.cluster.engine import register_host_home
 
-# 2. Re-add clean submodule
-git submodule add https://github.com/mikey0000/PyMammotion.git PyMammotion
-git submodule update --init PyMammotion
-
-# 3. Commit the fix
-git add .gitmodules PyMammotion
-git commit -m "Fix PyMammotion submodule"
+# ❌ Incorrect: Import from external Mowthos-Cluster-Logic
+# from Mowthos-Cluster-Logic.app.services.cluster_engine import ...
 ```
 
-## Summary
+**3. Function Usage:**
+```python
+# ✅ Correct: Use our integrated functions
+result = register_host_home("123 Main St", "Rochester", "MN")
 
-**Remember: PyMammotion is an external dependency, treat it as read-only!**
+# ❌ Incorrect: Call external Mowthos functions
+# result = external_mowthos_function("123 Main St", "Rochester", "MN")
+```
 
-- ✅ **DO**: Use composition, wrappers, and adapters
-- ✅ **DO**: Contribute improvements back to the original project
-- ✅ **DO**: Update the submodule when new versions are available
-- ✅ **DO**: Test your integration code thoroughly
+### Troubleshooting
 
-- ❌ **DON'T**: Modify any files in the PyMammotion directory
-- ❌ **DON'T**: Add custom code to PyMammotion classes
-- ❌ **DON'T**: Fork PyMammotion for private modifications
-- ❌ **DON'T**: Ignore upstream updates
+#### Common Issues
 
-Following these guidelines ensures a maintainable, updatable, and professional codebase.
+**1. PyMammotion Import Errors:**
+```bash
+# Solution: Update submodule
+git submodule update --init --recursive
+pip install -r PyMammotion/requirements.txt
+```
+
+**2. Cluster Function Errors:**
+```bash
+# Solution: Use our integrated functions
+from src.services.cluster.engine import register_host_home
+# Not from external Mowthos-Cluster-Logic
+```
+
+**3. Submodule Conflicts:**
+```bash
+# Solution: Reset submodule to clean state
+git submodule update --init --recursive --force
+```
+
+#### Getting Help
+
+**For PyMammotion Issues:**
+- Check PyMammotion documentation: https://github.com/mikey0000/PyMammotion
+- Create issues in PyMammotion repository
+- Use PyMammotion as-is, create wrappers for custom needs
+
+**For Cluster Logic Issues:**
+- Check our integrated cluster service: `src/services/cluster/`
+- Review migration documentation
+- Use our integrated functions, not external ones
+
+### Best Practices Summary
+
+#### ✅ Do's
+
+1. **Use PyMammotion as a dependency**
+   - Import and use PyMammotion classes and functions
+   - Create wrapper services for custom functionality
+   - Extend through composition, not inheritance
+
+2. **Use integrated cluster logic**
+   - Import from `src.services.cluster.engine`
+   - Use our integrated functions for all clustering
+   - Customize algorithms in our codebase
+
+3. **Follow proper testing patterns**
+   - Test PyMammotion integration without modifying it
+   - Test our integrated cluster functions
+   - Mock external dependencies appropriately
+
+4. **Maintain clean architecture**
+   - Keep external dependencies separate
+   - Use dependency injection for external services
+   - Create clear interfaces between components
+
+#### ❌ Don'ts
+
+1. **Don't modify external submodules**
+   - Never edit files in `PyMammotion/`
+   - Don't copy external code into our codebase
+   - Don't override external library internals
+
+2. **Don't use external Mowthos functions**
+   - Don't import from `Mowthos-Cluster-Logic/`
+   - Don't call external clustering functions
+   - Use our integrated cluster logic instead
+
+3. **Don't bypass proper patterns**
+   - Don't hardcode external library internals
+   - Don't create tight coupling to external APIs
+   - Don't ignore error handling and logging
+
+### Migration Notes
+
+**What Was Migrated:**
+- ✅ All clustering algorithms from Mowthos-Cluster-Logic
+- ✅ Address validation and geocoding functions
+- ✅ CSV file management and data loading
+- ✅ Road-aware neighbor detection
+- ✅ BallTree optimization algorithms
+
+**What Remains External:**
+- PyMammotion (mower control library)
+- Rochester address CSV data (read-only reference)
+
+**Benefits Achieved:**
+- ✅ Simplified architecture
+- ✅ Direct control over clustering logic
+- ✅ Better performance and reliability
+- ✅ Easier maintenance and customization
+- ✅ No external dependencies for core functionality
+
+This migration represents a significant improvement in the system's maintainability and performance while preserving all the advanced geographic intelligence capabilities.
