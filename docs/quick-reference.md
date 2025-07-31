@@ -6,11 +6,13 @@
 
 ### DO NOT MODIFY External Submodules
 
-**NEVER edit files in these directories:**
+**NEVER edit files in this directory:**
 - ❌ `PyMammotion/` - External submodule (read-only)
-- ❌ `Mowthos-Cluster-Logic/` - External submodule (read-only)
 
-**Why?** These are git submodules pointing to external repositories. Any modifications will be:
+**✅ CLUSTER LOGIC IS NOW INTEGRATED:**
+- ✅ `src/services/cluster/` - Integrated clustering logic (modify freely)
+
+**Why?** PyMammotion is a git submodule pointing to an external repository. Any modifications will be:
 - Lost during updates
 - Cause merge conflicts
 - Break compatibility
@@ -98,371 +100,392 @@ command.move_right(0.6)
 ```python
 from pymammotion.data.model.enums import ConnectionPreference
 
-# Set connection preference
-device.preference = ConnectionPreference.WIFI       # Cloud/WiFi
-device.preference = ConnectionPreference.BLUETOOTH  # Direct BLE
-device.preference = ConnectionPreference.EITHER     # Auto-select
+# Connection preferences
+ConnectionPreference.WIFI      # Cloud/WiFi connection
+ConnectionPreference.BLUETOOTH # Direct BLE connection
+ConnectionPreference.EITHER    # Automatic selection
 ```
 
-## Mowthos-Cluster-Logic - Core Functions
+## Cluster Service - Core Functions
 
-### Home Registration
+### ✅ INTEGRATED CLUSTERING LOGIC
+
+**The clustering logic has been migrated and is now fully integrated into our codebase.**
+
+### Basic Cluster Operations
 
 ```python
-from app.services.cluster_engine import register_host_home, register_neighbor_home
+from src.services.cluster.engine import (
+    register_host_home, register_neighbor_home,
+    discover_neighbors_for_host, find_qualified_host_for_neighbor
+)
 
-# Register host home with mower
-host_result = register_host_home(
-    address="123 Main St",
-    city="Rochester", 
+# Register a host home
+result = register_host_home("123 Main St", "Rochester", "MN", 44.0123, -92.1234)
+print(f"Host registration: {result['success']}")
+
+# Register a neighbor home
+result = register_neighbor_home("456 Elm St", "Rochester", "MN", 44.0124, -92.1235)
+print(f"Neighbor registration: {result['success']}")
+
+# Discover neighbors for a host
+neighbors = discover_neighbors_for_host("123 Main St, Rochester, MN")
+print(f"Found {len(neighbors)} qualified neighbors")
+
+# Find qualified hosts for a neighbor
+hosts = find_qualified_host_for_neighbor("456 Elm St, Rochester, MN")
+print(f"Found {len(hosts)} qualified hosts")
+```
+
+### Cluster Service Interface
+
+```python
+from src.services.cluster.service import ClusterService
+from src.models.schemas import Address
+
+# Initialize service
+cluster_service = ClusterService()
+await cluster_service.initialize()
+
+# Register a host
+address = Address(
+    street="503 GERANIUM ST SE",
+    city="ROCHESTER",
     state="MN",
-    latitude=44.0123,  # optional - will geocode if not provided
-    longitude=-92.1234  # optional
+    zip_code="55904",
+    latitude=43.9607404,
+    longitude=-92.4557066
 )
 
-# Register neighbor home
-neighbor_result = register_neighbor_home(
-    address="456 Elm St",
+cluster = await cluster_service.register_host(address, user_id=123)
+print(f"Created cluster: {cluster.cluster_id}")
+
+# Find neighbors
+neighbors = await cluster_service.find_neighbors(cluster.cluster_id)
+print(f"Found {len(neighbors)} neighbors")
+
+# Join a cluster
+assignment = await cluster_service.join_cluster(cluster.cluster_id, address, user_id=456)
+print(f"User joined cluster: {assignment.status}")
+```
+
+### Address Validation
+
+```python
+from src.services.cluster.mapbox import MapboxService
+
+mapbox = MapboxService(settings.mapbox_access_token)
+
+# Validate address
+validated = await mapbox.validate_address(
+    street="123 Main St",
     city="Rochester",
-    state="MN"
+    state="MN",
+    zip_code="55901"
 )
+
+if validated:
+    print(f"Valid address: {validated['latitude']}, {validated['longitude']}")
+else:
+    print("Invalid address")
 ```
 
-### Neighbor Discovery
+### CSV File Management
 
 ```python
-from app.services.cluster_engine import discover_neighbors_for_host, find_qualified_host_for_neighbor
+from src.services.cluster.engine import (
+    ensure_host_homes_csv, ensure_neighbor_homes_csv,
+    load_addresses_from_csv
+)
 
-# Find neighbors for a host
-host_address = "123 Main St, Rochester, MN"
-qualified_neighbors = discover_neighbors_for_host(host_address)
+# Ensure CSV files exist
+ensure_host_homes_csv()
+ensure_neighbor_homes_csv()
 
-# Find qualifying hosts for a neighbor
-neighbor_address = "456 Elm St, Rochester, MN" 
-qualified_hosts = find_qualified_host_for_neighbor(neighbor_address)
+# Load addresses from CSV
+addresses = load_addresses_from_csv("path/to/addresses.csv")
+print(f"Loaded {len(addresses)} addresses")
 ```
 
-### Geographic Services
+### Advanced Clustering
 
 ```python
-from app.services.mapbox_service import MapboxService
+# Suggest clusters for an address
+suggestions = await cluster_service.suggest_clusters(address)
+print(f"Found {len(suggestions)} cluster suggestions")
 
-mapbox = MapboxService(access_token)
+# Get cluster statistics
+stats = await cluster_service.get_cluster_stats(cluster_id)
+print(f"Cluster stats: {stats.member_count} members, {stats.coverage_area_sqm} sqm")
 
-# Geocode address
-coords = mapbox.geocode_address("123 Main St, Rochester, MN")
-if coords:
-    latitude, longitude = coords
+# Optimize routes
+optimization = await cluster_service.optimize_routes(cluster_id)
+print(f"Optimized route: {optimization.total_distance_meters}m")
 
-# Check road crossing (road-aware detection)
-host_coords = (44.0123, -92.1234)
-neighbor_coords = (44.0124, -92.1235)
-is_accessible = mapbox.is_accessible_without_crossing_road(host_coords, neighbor_coords)
+# Calculate coverage
+coverage = await cluster_service.calculate_coverage(addresses)
+print(f"Coverage: {coverage['total_area']} sqm, {coverage['average_distance']} km")
 ```
 
-## Current API Endpoints
+### Geographic Constants
 
-### Authentication
+```python
+from src.services.cluster.engine import (
+    EARTH_RADIUS_M, RADIUS_METERS, RADIUS_RADIANS
+)
 
-```bash
-# Login to get session
-curl -X POST "http://localhost:8000/login" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "account": "user@email.com",
-    "password": "password123",
-    "device_name": "Luba-XXXXX"
-  }'
+# Geographic constants
+print(f"Earth radius: {EARTH_RADIUS_M} meters")
+print(f"Cluster radius: {RADIUS_METERS} meters")
+print(f"Radius in radians: {RADIUS_RADIANS}")
 ```
 
-### Mower Control
+## Service Integration Patterns
 
-```bash
+### Mower Service Wrapper
+
+```python
+from src.services.mower.service import MowerService
+
+# Initialize mower service
+mower_service = MowerService()
+
 # Get device status
-curl "http://localhost:8000/status?device_name=Luba-XXXXX"
+status = await mower_service.get_device_status("Luba_001")
+print(f"Device {status.device_name}: {status.battery_level}% battery")
 
 # Start mowing
-curl -X POST "http://localhost:8000/start-mow" \
-  -H "Content-Type: application/json" \
-  -d '{"device_name": "Luba-XXXXX"}'
+await mower_service.start_mowing("Luba_001")
 
-# Stop mowing
-curl -X POST "http://localhost:8000/stop-mow" \
-  -H "Content-Type: application/json" \
-  -d '{"device_name": "Luba-XXXXX"}'
-
-# Return to dock
-curl -X POST "http://localhost:8000/return-to-dock" \
-  -H "Content-Type: application/json" \
-  -d '{"device_name": "Luba-XXXXX"}'
+# Get all devices
+devices = await mower_service.get_all_devices()
+for device in devices:
+    print(f"Device: {device.name}, Status: {device.status}")
 ```
 
-### Cluster Management
-
-```bash
-# Register host home
-curl -X POST "http://localhost:8000/clusters/register_host_home_csv" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "address": "123 Main St",
-    "city": "Rochester",
-    "state": "MN"
-  }'
-
-# Find neighbors for host
-curl -X POST "http://localhost:8000/clusters/discover_neighbors_for_host_csv" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "address": "123 Main St",
-    "city": "Rochester", 
-    "state": "MN"
-  }'
-
-# Geocode address
-curl -X POST "http://localhost:8000/clusters/geocode" \
-  -H "Content-Type: application/json" \
-  -d '{"address": "123 Main St, Rochester, MN"}'
-```
-
-## Work Mode Constants
+### Cluster Service Integration
 
 ```python
-# PyMammotion work modes
-MODE_NOT_ACTIVE = 0
-MODE_ONLINE = 1
-MODE_OFFLINE = 2
-MODE_DISABLE = 8
-MODE_INITIALIZATION = 10
-MODE_READY = 11
-MODE_WORKING = 13
-MODE_RETURNING = 14
-MODE_CHARGING = 15
-MODE_UPDATING = 16
-MODE_LOCK = 17
-MODE_PAUSE = 19
-MODE_MANUAL_MOWING = 20
+from src.services.cluster.service import ClusterService
+
+# Initialize cluster service
+cluster_service = ClusterService()
+await cluster_service.initialize()
+
+# Register host and find neighbors
+cluster = await cluster_service.register_host(address, user_id)
+neighbors = await cluster_service.find_neighbors(cluster.cluster_id)
+
+# Join cluster
+assignment = await cluster_service.join_cluster(cluster.cluster_id, neighbor_address, user_id)
+
+# Get cluster analytics
+stats = await cluster_service.get_cluster_stats(cluster.cluster_id)
+optimization = await cluster_service.optimize_routes(cluster.cluster_id)
 ```
 
-## Common Usage Patterns
+## Error Handling Patterns
 
-### Full Mower Control Workflow
+### PyMammotion Error Handling
 
 ```python
-async def complete_mowing_session():
-    # 1. Initialize and authenticate
+from pymammotion.mammotion.devices.mammotion import Mammotion
+
+async def safe_mower_operation():
+    try:
+        mammotion = Mammotion()
+        await mammotion.login_and_initiate_cloud("user@email.com", "password")
+        
+        # Safe command execution
+        await mammotion.send_command("Luba_001", "start_job")
+        return {"success": True, "message": "Mowing started"}
+        
+    except ConnectionError:
+        return {"success": False, "error": "Device offline"}
+    except Exception as e:
+        return {"success": False, "error": f"Operation failed: {str(e)}"}
+```
+
+### Cluster Service Error Handling
+
+```python
+from src.services.cluster.engine import register_host_home
+
+async def safe_host_registration(address, city, state, lat, lon):
+    try:
+        result = register_host_home(address, city, state, lat, lon)
+        
+        if result["success"]:
+            return {"success": True, "cluster_id": result["full_address"]}
+        else:
+            return {"success": False, "error": result["message"]}
+            
+    except FileNotFoundError:
+        return {"success": False, "error": "CSV file not found"}
+    except Exception as e:
+        return {"success": False, "error": f"Registration failed: {str(e)}"}
+```
+
+## Testing Patterns
+
+### PyMammotion Testing
+
+```python
+import pytest
+from unittest.mock import Mock, AsyncMock
+from pymammotion.mammotion.devices.mammotion import Mammotion
+
+def test_mammotion_integration():
+    """Test PyMammotion integration without modifying it"""
     mammotion = Mammotion()
-    await mammotion.login_and_initiate_cloud("user@email.com", "password")
+    assert mammotion is not None
     
-    # 2. Get device
-    devices = mammotion.device_manager.devices
-    device_name = list(devices.keys())[0]
+    # Mock device for testing
+    mock_device = Mock()
+    mock_device.mower_state.online = True
+    mock_device.mower_state.report_data.dev.battery_val = 85
     
-    # 3. Check status before starting
-    device = mammotion.get_device_by_name(device_name)
-    battery = device.mower_state.report_data.dev.battery_val
+    mammotion.get_device_by_name = Mock(return_value=mock_device)
     
-    if battery < 20:
-        print("Battery too low, sending to dock")
-        await mammotion.send_command(device_name, "return_to_dock")
-        return
-    
-    # 4. Start mowing
-    await mammotion.send_command(device_name, "start_job")
-    
-    # 5. Monitor progress
-    while True:
-        device = mammotion.get_device_by_name(device_name)
-        mode = device.mower_state.report_data.dev.sys_status
-        progress = device.mower_state.report_data.work.progress
-        
-        print(f"Mode: {mode}, Progress: {progress}%")
-        
-        if mode == 14:  # MODE_RETURNING
-            print("Mowing complete, returning to dock")
-            break
-            
-        await asyncio.sleep(30)  # Check every 30 seconds
+    device = mammotion.get_device_by_name("test_device")
+    assert device.mower_state.online is True
+    assert device.mower_state.report_data.dev.battery_val == 85
 ```
 
-### Cluster Setup Workflow
+### Cluster Logic Testing
 
 ```python
-async def setup_mowing_cluster():
-    # 1. Register host home
-    host_result = register_host_home(
-        "123 Main St", "Rochester", "MN"
-    )
+import pytest
+from src.services.cluster.engine import register_host_home
+
+def test_host_registration():
+    """Test our integrated clustering functions"""
+    result = register_host_home("123 Main St", "Rochester", "MN", 44.0123, -92.1234)
+    assert result["success"] is True
+    assert "full_address" in result
+    assert "latitude" in result
+    assert "longitude" in result
+
+def test_neighbor_discovery():
+    """Test neighbor discovery functionality"""
+    # First register a host
+    register_host_home("123 Main St", "Rochester", "MN", 44.0123, -92.1234)
     
-    if not host_result["success"]:
-        print("Failed to register host")
-        return
+    # Then discover neighbors
+    from src.services.cluster.engine import discover_neighbors_for_host
+    neighbors = discover_neighbors_for_host("123 Main St, Rochester, MN")
     
-    # 2. Find qualified neighbors
-    neighbors = discover_neighbors_for_host(host_result["full_address"])
-    print(f"Found {len(neighbors)} qualified neighbors")
-    
-    # 3. Register neighbors that want to join
-    for neighbor_address in neighbors[:3]:  # Limit to 3 neighbors
-        # In real implementation, this would be user-driven
-        address_parts = neighbor_address.split(", ")
-        register_neighbor_home(
-            address_parts[0],
-            address_parts[1], 
-            address_parts[2]
-        )
-    
-    print("Cluster setup complete")
-```
-
-### Error Handling Patterns
-
-```python
-async def robust_mower_command(device_name: str, command: str):
-    """Execute mower command with error handling"""
-    max_retries = 3
-    
-    for attempt in range(max_retries):
-        try:
-            await mammotion.send_command(device_name, command)
-            print(f"Command '{command}' executed successfully")
-            return True
-            
-        except Exception as e:
-            print(f"Attempt {attempt + 1} failed: {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff
-            else:
-                print(f"Command '{command}' failed after {max_retries} attempts")
-                return False
-```
-
-### Status Monitoring with Caching
-
-```python
-import time
-from typing import Dict, Optional
-
-class MowerStatusCache:
-    def __init__(self, cache_duration: int = 30):
-        self.cache: Dict[str, tuple] = {}
-        self.cache_duration = cache_duration
-    
-    async def get_status(self, device_name: str) -> Optional[Dict]:
-        """Get device status with caching"""
-        now = time.time()
-        
-        # Check cache
-        if device_name in self.cache:
-            cached_data, timestamp = self.cache[device_name]
-            if now - timestamp < self.cache_duration:
-                return cached_data
-        
-        # Fetch fresh data
-        try:
-            device = mammotion.get_device_by_name(device_name)
-            status = {
-                "online": device.mower_state.online,
-                "battery": device.mower_state.report_data.dev.battery_val,
-                "mode": device.mower_state.report_data.dev.sys_status,
-                "timestamp": now
-            }
-            
-            # Cache the result
-            self.cache[device_name] = (status, now)
-            return status
-            
-        except Exception as e:
-            print(f"Failed to get status for {device_name}: {e}")
-            return None
-
-# Usage
-cache = MowerStatusCache()
-status = await cache.get_status("Luba-XXXXX")
-```
-
-## Development Setup
-
-```bash
-# 1. Clone with submodules
-git clone --recursive https://github.com/your-org/mowthosos
-cd mowthosos
-
-# 2. Install dependencies
-pip install -r requirements.txt
-pip install -r PyMammotion/requirements.txt
-pip install -r Mowthos-Cluster-Logic/requirements.txt
-
-# 3. Set up environment
-cp .env.example .env
-# Edit .env with your API keys
-
-# 4. Run the application
-python main.py
-
-# 5. Test the API
-curl http://localhost:8000/health
+    # Should return a list (may be empty depending on data)
+    assert isinstance(neighbors, list)
 ```
 
 ## Configuration
 
-```python
-# Essential environment variables
-MAPBOX_ACCESS_TOKEN=pk.xxx              # For geocoding and mapping
-STRIPE_SECRET_KEY=sk_xxx                # For payment processing (future)
-DATABASE_URL=postgresql://...           # Database connection
-REDIS_URL=redis://localhost:6379/0     # Cache and sessions
-SECRET_KEY=your_secret_key              # JWT signing
-LOG_LEVEL=INFO                          # Logging level
+### Environment Variables
+
+```bash
+# Required for clustering
+MAPBOX_ACCESS_TOKEN=your_mapbox_token_here
+
+# Database (for production)
+DATABASE_URL=postgresql://user:pass@localhost/mowthos
+
+# Redis (for sessions)
+REDIS_URL=redis://localhost:6379
+
+# Security
+SECRET_KEY=your-secret-key-here
 ```
 
-## Troubleshooting
+### Poetry Dependencies
 
-### Common PyMammotion Issues
+```bash
+# Install dependencies
+poetry install
 
-```python
-# Issue: Login fails
-# Solution: Check credentials and network connectivity
-try:
-    await mammotion.login_and_initiate_cloud(account, password)
-except Exception as e:
-    print(f"Login failed: {e}")
-    # Check account credentials, network connection
+# Add new dependency
+poetry add package-name
 
-# Issue: Device not found  
-# Solution: Verify device name and ensure it's online
-devices = mammotion.device_manager.devices
-if device_name not in devices:
-    print(f"Available devices: {list(devices.keys())}")
+# Update dependencies
+poetry update
 
-# Issue: Command not responding
-# Solution: Check device connection preference
-device = mammotion.get_device_by_name(device_name)
-if not device.has_cloud() and device.preference == ConnectionPreference.WIFI:
-    print("Device has no cloud connection but WiFi preference set")
+# Show dependency tree
+poetry show --tree
 ```
 
-### Common Cluster Logic Issues
+## Common Commands
 
-```python
-# Issue: Geocoding fails
-# Solution: Check Mapbox token and address format
-coords = mapbox.geocode_address(address)
-if not coords:
-    print(f"Failed to geocode: {address}")
-    print("Check address format and Mapbox token")
+### Development
 
-# Issue: No neighbors found
-# Solution: Check radius and road detection
-neighbors = discover_neighbors_for_host(host_address)
-if not neighbors:
-    print("No neighbors found - check 80m radius and road accessibility")
+```bash
+# Start development server
+poetry run uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
-# Issue: Road detection errors
-# Solution: Ensure OSMnx is installed and network is available
-try:
-    import osmnx as ox
-except ImportError:
-    print("OSMnx not available - road detection disabled")
+# Run tests
+poetry run pytest
+
+# Run specific test file
+poetry run pytest tests/test_cluster/test_engine.py
+
+# Run with coverage
+poetry run pytest --cov=src --cov-report=html
 ```
 
-This quick reference provides the essential functions and patterns needed to work effectively with both PyMammotion and Mowthos-Cluster-Logic components.
+### Code Quality
+
+```bash
+# Format code
+poetry run black src/ tests/
+
+# Sort imports
+poetry run isort src/ tests/
+
+# Type checking
+poetry run mypy src/
+
+# Linting
+poetry run flake8 src/ tests/
+```
+
+### Submodule Management
+
+```bash
+# Update PyMammotion submodule
+git submodule update --init --recursive
+
+# Check submodule status
+git submodule status
+
+# Update to latest version
+git submodule update --remote PyMammotion
+```
+
+## Migration Notes
+
+### What Was Migrated
+
+**From Mowthos-Cluster-Logic to Integrated Logic:**
+- ✅ `register_host_home()` - Host registration
+- ✅ `register_neighbor_home()` - Neighbor registration
+- ✅ `discover_neighbors_for_host()` - Neighbor discovery
+- ✅ `find_qualified_host_for_neighbor()` - Host finding
+- ✅ `load_addresses_from_csv()` - CSV processing
+- ✅ `ensure_host_homes_csv()` - CSV management
+- ✅ Road-aware detection algorithms
+- ✅ BallTree optimization
+- ✅ Geographic distance calculations
+
+### Benefits Achieved
+
+- ✅ **Simplified Architecture**: No more complex import paths
+- ✅ **Direct Control**: Full control over clustering algorithms
+- ✅ **Better Performance**: No external module loading overhead
+- ✅ **Easier Maintenance**: All logic in our codebase
+- ✅ **No External Dependencies**: Core clustering is self-contained
+
+### What Remains External
+
+- PyMammotion (mower control library)
+- Rochester address CSV data (read-only reference)
+
+This quick reference provides the essential functions and patterns needed to work effectively with both PyMammotion and our integrated clustering system.

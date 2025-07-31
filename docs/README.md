@@ -6,7 +6,7 @@
 
 1. [System Overview](#system-overview)
 2. [PyMammotion Component](#pymammotion-component) ⚠️ *External Submodule - Do Not Modify*
-3. [Mowthos-Cluster-Logic Component](#mowthos-cluster-logic-component) ⚠️ *External Submodule - Do Not Modify*
+3. [Cluster Service Component](#cluster-service-component) ✅ *Integrated Clustering Logic*
 4. [Integration Architecture](#integration-architecture)
 5. [API Reference](#api-reference)
 6. [Deployment Guide](#deployment-guide)
@@ -37,7 +37,7 @@ MowthosOS is a sophisticated backend system designed to manage Mammotion robotic
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  ┌─────────────────┐    ┌─────────────────────────────────┐  │
-│  │   Main API      │    │     Submodules                 │  │
+│  │   Main API      │    │     Components                 │  │
 │  │   (main.py)     │    │                                │  │
 │  │                 │    │  ┌───────────────────────────┐  │  │
 │  │ - Mower Control │    │  │      PyMammotion         │  │  │
@@ -46,8 +46,8 @@ MowthosOS is a sophisticated backend system designed to manage Mammotion robotic
 │  └─────────────────┘    │  └───────────────────────────┘  │  │
 │                         │                                │  │
 │                         │  ┌───────────────────────────┐  │  │
-│                         │  │  Mowthos-Cluster-Logic   │  │  │
-│                         │  │   (Geographic Logic)     │  │  │
+│                         │  │    Cluster Service       │  │  │
+│                         │  │   (Integrated Logic)     │  │  │
 │                         │  │                          │  │  │
 │                         │  └───────────────────────────┘  │  │
 │                         └─────────────────────────────────┘  │
@@ -199,464 +199,373 @@ async def control_mower():
     mammotion = Mammotion()
     await mammotion.login_and_initiate_cloud("user@email.com", "password")
     
-    # Get first available device
-    devices = mammotion.device_manager.devices
-    device_name = list(devices.keys())[0]
-    
-    # Start mowing
-    await mammotion.send_command(device_name, "start_job")
-    
-    # Get status
-    device = mammotion.get_device_by_name(device_name)
-    print(f"Battery: {device.mower_state.report_data.dev.battery_val}%")
-    print(f"Mode: {device.mower_state.report_data.dev.sys_status}")
-
-asyncio.run(control_mower())
-```
-
-#### Advanced State Monitoring
-```python
-def monitor_mower_state(device):
-    state = device.mower_state
-    
-    return {
-        "online": state.online,
-        "battery": state.report_data.dev.battery_val,
-        "charging": state.report_data.dev.charge_state,
-        "work_mode": state.report_data.dev.sys_status,
-        "location": {
-            "lat": state.location.device.latitude,
-            "lng": state.location.device.longitude,
-            "orientation": state.location.orientation
-        },
-        "work_progress": state.report_data.work.progress,
-        "work_area": state.report_data.work.area
-    }
+    # Get device and start mowing
+    device = mammotion.get_device_by_name("Luba_001")
+    await mammotion.send_command("Luba_001", "start_job")
 ```
 
 ---
 
-## Mowthos-Cluster-Logic Component
+## Cluster Service Component
 
-### ⚠️ CRITICAL WARNING: DO NOT MODIFY Mowthos-Cluster-Logic
+### ✅ INTEGRATED CLUSTERING LOGIC
 
-**Mowthos-Cluster-Logic is an external git submodule and MUST NOT be modified directly.**
+**The clustering logic has been migrated from Mowthos-Cluster-Logic and is now fully integrated into our codebase.**
 
-- **External Repository**: `https://github.com/jackhobday/Mowthos-Cluster-Logic.git`
-- **Read-Only**: Treat as a dependency, not part of our codebase
-- **Updates**: Will overwrite any local modifications
-- **Contributing**: Changes should be submitted to the original repository
-
-See [Development Guidelines](development-guidelines.md) for detailed integration patterns.
+- **Location**: `src/services/cluster/`
+- **Status**: Fully integrated and maintained
+- **Dependencies**: Uses our own Mapbox service and address database
+- **Benefits**: Direct control, easier maintenance, no external dependencies
 
 ### Overview
 
-Mowthos-Cluster-Logic provides intelligent geographic clustering capabilities for organizing homes into efficient mower-sharing groups. It uses advanced algorithms to determine which homes can be serviced by the same mower based on:
+The Cluster Service provides intelligent geographic clustering capabilities for organizing homes into efficient mower-sharing groups. It uses advanced algorithms to determine which homes can be serviced by the same mower based on:
 
-- **Geographic Proximity**: Homes within 80-meter radius
-- **Road-Aware Detection**: Prevents clustering across impassable roads
-- **Scalable Storage**: CSV-based data management for simplicity
+- **Geographic Proximity**: 80-meter radius clustering
+- **Road-Aware Detection**: Considers road crossings for accessibility
+- **Address Validation**: Mapbox geocoding for accurate location data
+- **CSV Database**: Rochester address database for real-world testing
 
-### Core Services and Functions
+### Core Components
 
-#### 1. Cluster Engine (`cluster_engine.py`)
+#### 1. Cluster Service (`service.py`)
 
-**Core Algorithms:**
-- **Ball Tree Algorithm**: Efficient spatial indexing using scikit-learn
-- **Haversine Distance**: Geographic distance calculation
-- **Road Detection**: OSMnx integration for road network analysis
-
-**Key Functions:**
-
+**Main service interface for cluster management:**
 ```python
-# Host home registration
-def register_host_home(address, city, state, latitude=None, longitude=None):
-    """Register a host home with optional geocoding"""
-    
-# Neighbor home registration  
-def register_neighbor_home(address, city, state, latitude=None, longitude=None):
-    """Register a neighbor home with optional geocoding"""
+from src.services.cluster.service import ClusterService
 
-# Neighbor discovery
-def discover_neighbors_for_host(host_address):
-    """Find all qualified neighbors for a host using road-aware detection"""
-    
-# Host discovery
-def find_qualified_host_for_neighbor(neighbor_address):
-    """Find all qualified host homes for a neighbor"""
+cluster_service = ClusterService()
+
+# Register a host home
+cluster = await cluster_service.register_host(address, user_id)
+
+# Find neighbors for a cluster
+neighbors = await cluster_service.find_neighbors(cluster_id)
+
+# Join a cluster
+assignment = await cluster_service.join_cluster(cluster_id, address, user_id)
 ```
 
-#### 2. Geographic Services (`mapbox_service.py`)
+#### 2. Cluster Engine (`engine.py`)
 
-**`MapboxService` Class** - Geolocation and mapping services
-
+**Core clustering algorithms and functions:**
 ```python
-class MapboxService:
-    def __init__(self, access_token: str)
-    
-    def geocode_address(self, address: str) -> Optional[Tuple[float, float]]
-    """Convert address to coordinates"""
-    
-    def is_accessible_without_crossing_road(self, host_coords, candidate_coords) -> bool
-    """Road-aware neighbor detection using OSMnx"""
-    
-    def get_property_boundaries(self, lat: float, lng: float) -> Optional[Dict]
-    """Get property boundary information"""
+from src.services.cluster.engine import (
+    register_host_home, register_neighbor_home,
+    discover_neighbors_for_host, find_qualified_host_for_neighbor
+)
+
+# Register host home
+result = register_host_home("123 Main St", "Rochester", "MN", 44.0123, -92.1234)
+
+# Discover neighbors
+neighbors = discover_neighbors_for_host("123 Main St, Rochester, MN")
+
+# Find qualified hosts
+hosts = find_qualified_host_for_neighbor("456 Elm St, Rochester, MN")
 ```
 
-**Road-Aware Detection Algorithm:**
-1. Download road network from OpenStreetMap (300m radius)
-2. Create buffered road geometries (~5m width)
-3. Test line intersection between homes and roads
-4. Reject candidates that cross drivable roads
+#### 3. Mapbox Service (`mapbox.py`)
 
-#### 3. API Endpoints (`routers/clusters.py`)
-
-**CSV-Based Endpoints:**
-
+**Address validation and geocoding:**
 ```python
-POST /clusters/register_host_home_csv
-POST /clusters/register_neighbor_home_csv
-POST /clusters/discover_neighbors_for_host_csv
-POST /clusters/find_qualified_host_for_neighbor_csv
-POST /clusters/geocode
+from src.services.cluster.mapbox import MapboxService
+
+mapbox = MapboxService(settings.mapbox_access_token)
+
+# Validate address
+validated = await mapbox.validate_address(
+    street="123 Main St",
+    city="Rochester", 
+    state="MN",
+    zip_code="55901"
+)
 ```
 
-**Request/Response Models:**
-```python
-class RegisterHostHomeCSVRequest(BaseModel):
-    address: str
-    city: str
-    state: str
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
+### Key Features
 
-class QualifiedAddressesResponse(BaseModel):
-    qualified_addresses: List[str]
-```
+#### Geographic Clustering
+- **80-meter radius**: Optimal distance for mower sharing
+- **Road-aware filtering**: Excludes addresses requiring road crossings
+- **Real address database**: Uses Rochester address CSV for testing
+- **BallTree optimization**: Efficient neighbor search algorithms
 
-#### 4. Data Models (`models.py`)
+#### Address Management
+- **CSV-based storage**: Host homes and neighbor homes in CSV files
+- **Automatic geocoding**: Mapbox integration for coordinate lookup
+- **Address validation**: Ensures addresses are valid and accessible
+- **State handling**: Supports different CSV formats (postcode vs state)
 
-**Database Models** (for future enhancement):
-```python
-class User(Base):
-    email: str
-    name: str
-    latitude: float
-    longitude: float
-    is_host: bool
-    cluster_id: Optional[int]
-
-class Cluster(Base):
-    name: str
-    host_user_id: int
-    max_capacity: int = 5
-
-class LawnBoundary(Base):
-    user_id: int
-    boundary_coordinates: str  # JSON polygon
-    area_sqm: float
-```
+#### Cluster Operations
+- **Host registration**: Register homes as cluster hosts
+- **Neighbor discovery**: Find qualified neighbors for hosts
+- **Cluster joining**: Add homes to existing clusters
+- **Route optimization**: Calculate optimal mowing routes
+- **Coverage analysis**: Analyze cluster efficiency and coverage
 
 ### Usage Examples
 
-#### Registering Homes
+#### Basic Cluster Management
 ```python
-import requests
+from src.services.cluster.service import ClusterService
+from src.models.schemas import Address
 
-# Register a host home
-response = requests.post("http://localhost:8000/clusters/register_host_home_csv", json={
-    "address": "123 Main St",
-    "city": "Rochester", 
-    "state": "MN"
-})
+# Initialize service
+cluster_service = ClusterService()
+await cluster_service.initialize()
 
-# Register a neighbor home
-response = requests.post("http://localhost:8000/clusters/register_neighbor_home_csv", json={
-    "address": "456 Elm St",
-    "city": "Rochester",
-    "state": "MN" 
-})
+# Create address
+address = Address(
+    street="503 GERANIUM ST SE",
+    city="ROCHESTER",
+    state="MN",
+    zip_code="55904",
+    latitude=43.9607404,
+    longitude=-92.4557066
+)
+
+# Register host
+cluster = await cluster_service.register_host(address, user_id=123)
+
+# Find neighbors
+neighbors = await cluster_service.find_neighbors(cluster.cluster_id)
+print(f"Found {len(neighbors)} qualified neighbors")
 ```
 
-#### Finding Neighbors
+#### Advanced Clustering
 ```python
-# Find neighbors for a host
-response = requests.post("http://localhost:8000/clusters/discover_neighbors_for_host_csv", json={
-    "address": "123 Main St",
-    "city": "Rochester",
-    "state": "MN"
-})
+# Suggest clusters for an address
+suggestions = await cluster_service.suggest_clusters(address)
 
-qualified_neighbors = response.json()["qualified_addresses"]
+# Get cluster statistics
+stats = await cluster_service.get_cluster_stats(cluster_id)
+
+# Optimize routes
+optimization = await cluster_service.optimize_routes(cluster_id)
 ```
 
-#### Geocoding Addresses
-```python
-# Geocode an address
-response = requests.post("http://localhost:8000/clusters/geocode", json={
-    "address": "123 Main St, Rochester, MN"
-})
+### Migration Benefits
 
-coords = response.json()
-latitude = coords["latitude"]
-longitude = coords["longitude"]
+#### Before (External Submodule)
+- ❌ Complex import paths and dependency management
+- ❌ External repository dependency
+- ❌ Difficult to modify and customize
+- ❌ Version conflicts and update issues
+
+#### After (Integrated Logic)
+- ✅ Direct control over clustering algorithms
+- ✅ Simplified architecture and imports
+- ✅ Easy customization and maintenance
+- ✅ No external dependencies for core logic
+- ✅ Better performance and reliability
+
+### Configuration
+
+#### Environment Variables
+```bash
+# Required for Mapbox geocoding
+MAPBOX_ACCESS_TOKEN=your_mapbox_token_here
+```
+
+#### CSV Files
+The service uses CSV files for address data:
+- `Mowthos-Cluster-Logic/olmsted_addresses_559xx.csv` - Rochester address database
+- `Mowthos-Cluster-Logic/host_homes.csv` - Registered host homes
+- `Mowthos-Cluster-Logic/neighbor_homes.csv` - Registered neighbor homes
+
+### Testing
+
+#### Integration Test
+```bash
+# Test the integrated clustering functions
+poetry run python test_cluster_integration.py
+```
+
+#### Local Function Test
+```bash
+# Test local functions without external dependencies
+poetry run python test_local_cluster.py
 ```
 
 ---
 
 ## Integration Architecture
 
-### Current Integration (main.py)
+### System Components
 
-The current `main.py` provides a basic FastAPI service that integrates PyMammotion for mower control:
+**1. Main API (`main.py`)**
+- FastAPI application entry point
+- Route definitions and middleware
+- Session management and authentication
+- Integration with all services
 
-```python
-# Key integration points:
-- Session management for user authentication
-- Device discovery and connection
-- Mower status monitoring
-- Command execution (start/stop/pause/resume/dock)
-- Health monitoring
+**2. Mower Service (`src/services/mower/`)**
+- PyMammotion integration wrapper
+- Device management and control
+- State monitoring and reporting
+- Command execution and validation
+
+**3. Cluster Service (`src/services/cluster/`)**
+- Integrated geographic clustering logic
+- Address validation and geocoding
+- Neighbor discovery and qualification
+- Route optimization and coverage analysis
+
+**4. Core Infrastructure (`src/core/`)**
+- Configuration management
+- Database connections
+- Logging and monitoring
+- Utility functions and helpers
+
+### Data Flow
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│   Client    │───▶│   FastAPI   │───▶│   Services  │
+│  (Web/Mobile)│   │   (main.py)  │   │             │
+└─────────────┘    └─────────────┘    └─────────────┘
+                           │                   │
+                           ▼                   ▼
+                   ┌─────────────┐    ┌─────────────┐
+                   │  PyMammotion│    │   Cluster   │
+                   │  (External) │    │   Service   │
+                   └─────────────┘    └─────────────┘
 ```
 
-**Current API Endpoints:**
-- `POST /login` - Authenticate with Mammotion cloud
-- `GET /status` - Get mower status  
-- `POST /start-mow` - Start mowing operation
-- `POST /stop-mow` - Stop mowing
-- `POST /pause-mowing` - Pause operation
-- `POST /resume-mowing` - Resume operation
-- `POST /return-to-dock` - Return to charging dock
-- `GET /devices` - List available devices
-- `GET /health` - Health check
+### Service Communication
 
-### Proposed Unified Architecture
-
-#### 1. Microservices Structure
-
+**1. Mower Control Flow:**
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                   MowthosOS Backend                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │              API Gateway Layer                          │ │
-│  │                  (FastAPI)                             │ │
-│  ├─────────────────────────────────────────────────────────┤ │
-│  │                                                         │ │
-│  │  ┌───────────────┐  ┌─────────────────┐  ┌────────────┐ │ │
-│  │  │   Mower       │  │    Cluster      │  │  Payment   │ │ │
-│  │  │   Service     │  │    Service      │  │  Service   │ │ │
-│  │  │               │  │                 │  │            │ │ │
-│  │  │ - Device Mgmt │  │ - Geographic    │  │ - Stripe   │ │ │
-│  │  │ - Commands    │  │   Clustering    │  │   API      │ │ │
-│  │  │ - Monitoring  │  │ - Road Analysis │  │ - Billing  │ │ │
-│  │  │ - PyMammotion │  │ - Mapbox API    │  │ - Invoices │ │ │
-│  │  └───────────────┘  └─────────────────┘  └────────────┘ │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │                 Data Layer                              │ │
-│  │                                                         │ │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │ │
-│  │  │ PostgreSQL  │  │    Redis    │  │    CSV Files    │  │ │
-│  │  │             │  │             │  │                 │  │ │
-│  │  │ - Users     │  │ - Sessions  │  │ - Host Homes    │  │ │
-│  │  │ - Devices   │  │ - Cache     │  │ - Neighbors     │  │ │
-│  │  │ - Billing   │  │ - Real-time │  │ - Addresses     │  │ │
-│  │  └─────────────┘  └─────────────┘  └─────────────────┘  │ │
-│  └─────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
+Client Request → FastAPI → MowerService → PyMammotion → Mower Device
 ```
 
-#### 2. Service Breakdown
-
-**Mower Service** (Enhanced PyMammotion Integration)
-- Device discovery and management
-- Real-time status monitoring
-- Command execution and queuing
-- Firmware management
-- Error handling and recovery
-
-**Cluster Service** (Enhanced Mowthos-Cluster-Logic)
-- Geographic clustering algorithms
-- Road-aware neighbor detection
-- Dynamic cluster optimization
-- Route planning for multi-home mowing
-- Coverage area calculation
-
-**Payment Service** (New - Stripe Integration)
-- Subscription management
-- Usage-based billing
-- Payment processing
-- Invoice generation
-- Billing analytics
-
-#### 3. Enhanced Data Models
-
-```python
-# Enhanced User Model
-class User(BaseModel):
-    id: int
-    email: str
-    name: str
-    address: Address
-    subscription_plan: SubscriptionPlan
-    mower_assignments: List[MowerAssignment]
-    billing_info: BillingInfo
-    
-# Mower Device Model
-class MowerDevice(BaseModel):
-    id: str
-    name: str
-    model: str
-    firmware_version: str
-    owner_id: int
-    cluster_id: Optional[int]
-    status: MowerStatus
-    location: Location
-    maintenance_schedule: MaintenanceSchedule
-    
-# Enhanced Cluster Model  
-class Cluster(BaseModel):
-    id: int
-    name: str
-    host_user_id: int
-    member_users: List[int]
-    mower_devices: List[str]
-    coverage_area: GeographicArea
-    mowing_schedule: Schedule
-    optimization_metrics: ClusterMetrics
+**2. Clustering Flow:**
+```
+Client Request → FastAPI → ClusterService → Mapbox API → CSV Database
 ```
 
-#### 4. API Consolidation
+**3. Data Storage:**
+- **Sessions**: Redis for user sessions and device states
+- **Addresses**: CSV files for geographic data
+- **Clusters**: Database tables for cluster management
+- **Logs**: Structured logging for monitoring and debugging
 
-**Unified Endpoint Structure:**
-```
-/api/v1/
-├── auth/
-│   ├── POST /login
-│   ├── POST /logout
-│   └── POST /refresh
-├── mowers/
-│   ├── GET /devices
-│   ├── GET /{device_id}/status
-│   ├── POST /{device_id}/commands/start
-│   ├── POST /{device_id}/commands/stop
-│   ├── POST /{device_id}/commands/pause
-│   ├── POST /{device_id}/commands/resume
-│   ├── POST /{device_id}/commands/dock
-│   └── GET /{device_id}/history
-├── clusters/
-│   ├── POST /register_host
-│   ├── POST /register_neighbor  
-│   ├── GET /{cluster_id}
-│   ├── POST /{cluster_id}/optimize
-│   └── GET /{cluster_id}/analytics
-├── billing/
-│   ├── GET /subscription
-│   ├── POST /subscription/upgrade
-│   ├── GET /invoices
-│   └── POST /payment-methods
-└── admin/
-    ├── GET /analytics
-    ├── GET /system-health
-    └── POST /maintenance
-```
+### Error Handling
+
+**1. Mower Communication:**
+- Connection timeouts and retries
+- Device state validation
+- Command execution verification
+- Fallback communication methods
+
+**2. Clustering Operations:**
+- Address validation failures
+- Geocoding errors and fallbacks
+- CSV file access issues
+- Road detection algorithm errors
+
+**3. System Resilience:**
+- Graceful degradation for external service failures
+- Comprehensive logging for debugging
+- Circuit breaker patterns for external APIs
+- Health checks and monitoring
 
 ---
 
 ## API Reference
 
-### Authentication
+### Mower Control Endpoints
 
-All APIs require authentication via session tokens obtained from the login endpoint.
-
-**Login**
+**Device Management:**
 ```http
-POST /api/v1/auth/login
-Content-Type: application/json
-
-{
-  "account": "user@example.com",
-  "password": "password123"
-}
-
-Response:
-{
-  "success": true,
-  "session_id": "abc123...",
-  "user_id": 1,
-  "expires_at": "2024-01-15T10:30:00Z"
-}
+GET /api/v1/mowers                    # List all mowers
+GET /api/v1/mowers/{device_name}      # Get specific mower
+POST /api/v1/mowers/{device_name}/connect    # Connect to mower
+DELETE /api/v1/mowers/{device_name}/disconnect # Disconnect from mower
 ```
 
-### Mower Control
-
-**Get Device Status**
+**Mowing Operations:**
 ```http
-GET /api/v1/mowers/{device_id}/status
-Authorization: Bearer {session_token}
+POST /api/v1/mowers/{device_name}/start-job     # Start mowing job
+POST /api/v1/mowers/{device_name}/cancel-job    # Cancel current job
+POST /api/v1/mowers/{device_name}/pause         # Pause mowing
+POST /api/v1/mowers/{device_name}/resume        # Resume mowing
+POST /api/v1/mowers/{device_name}/return-dock   # Return to dock
+```
 
-Response:
+**Device Status:**
+```http
+GET /api/v1/mowers/{device_name}/status         # Get device status
+GET /api/v1/mowers/{device_name}/battery        # Get battery level
+GET /api/v1/mowers/{device_name}/location       # Get GPS location
+GET /api/v1/mowers/{device_name}/work-mode      # Get work mode
+```
+
+### Cluster Management Endpoints
+
+**Cluster Operations:**
+```http
+POST /api/v1/clusters/register-host             # Register host home
+GET /api/v1/clusters/{cluster_id}/neighbors     # Find cluster neighbors
+POST /api/v1/clusters/{cluster_id}/join         # Join cluster
+GET /api/v1/clusters/{cluster_id}/stats         # Get cluster statistics
+POST /api/v1/clusters/{cluster_id}/optimize     # Optimize routes
+```
+
+**Address Management:**
+```http
+POST /api/v1/addresses/validate                 # Validate address
+GET /api/v1/addresses/suggest-clusters          # Suggest clusters for address
+GET /api/v1/addresses/coverage                  # Calculate coverage area
+```
+
+### Authentication & Security
+
+**Session Management:**
+```http
+POST /api/v1/auth/login                         # User login
+POST /api/v1/auth/logout                        # User logout
+GET /api/v1/auth/session                        # Get session info
+POST /api/v1/auth/refresh                       # Refresh session
+```
+
+**Rate Limiting:**
+- 100 requests per minute per user
+- 1000 requests per hour per IP
+- Exponential backoff for repeated failures
+
+### Response Formats
+
+**Success Response:**
+```json
 {
-  "device_id": "Luba-XXXXX",
-  "online": true,
-  "battery_level": 85,
-  "work_mode": "MODE_WORKING",
-  "location": {
-    "latitude": 44.0123,
-    "longitude": -92.1234,
-    "orientation": 90
+  "success": true,
+  "data": {
+    "cluster_id": "cluster_123_1234567890",
+    "name": "Main Street Cluster",
+    "host_user_id": 123,
+    "members": [123, 456, 789],
+    "max_capacity": 5,
+    "created_at": "2024-01-15T10:30:00Z",
+    "is_active": true
   },
-  "work_progress": 45,
-  "work_area": 150,
-  "last_updated": "2024-01-15T10:30:00Z"
+  "message": "Cluster created successfully"
 }
 ```
 
-**Start Mowing**
-```http
-POST /api/v1/mowers/{device_id}/commands/start
-Authorization: Bearer {session_token}
-
+**Error Response:**
+```json
 {
-  "area_id": "zone_1",
-  "priority": "normal"
-}
-
-Response:
-{
-  "success": true,
-  "command_id": "cmd_123",
-  "estimated_duration": 7200
-}
-```
-
-### Cluster Management
-
-**Register Host Home**
-```http
-POST /api/v1/clusters/register_host
-Authorization: Bearer {session_token}
-
-{
-  "address": "123 Main St",
-  "city": "Rochester",
-  "state": "MN",
-  "mower_device_ids": ["Luba-001"],
-  "service_area": {
-    "polygon": [[lat, lng], ...],
-    "area_sqm": 500
-  }
-}
-
-Response:
-{
-  "success": true,
-  "cluster_id": 1,
-  "qualified_neighbors": ["456 Elm St, Rochester, MN"]
+  "success": false,
+  "error": {
+    "code": "INVALID_ADDRESS",
+    "message": "Address could not be validated",
+    "details": {
+      "address": "123 Invalid St",
+      "reason": "Geocoding failed"
+    }
+  },
+  "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
 
@@ -667,199 +576,359 @@ Response:
 ### Prerequisites
 
 **System Requirements:**
-- Python 3.11+
-- PostgreSQL 13+
-- Redis 6+
-- Docker & Docker Compose (recommended)
+- Python 3.13+
+- Redis 6.0+
+- PostgreSQL 13+ (for production)
+- 2GB RAM minimum
+- 10GB storage
 
-**External Services:**
-- Mapbox Access Token
-- Stripe API Keys (for payment processing)
-- Mammotion Cloud Account
+**External Dependencies:**
+- Mapbox API access token
+- Mammotion cloud account
+- Internet connectivity for device communication
 
-### Environment Setup
+### Installation
 
+**1. Clone Repository:**
 ```bash
-# 1. Clone repository with submodules
-git clone --recursive https://github.com/your-org/mowthosos
-cd mowthosos
-
-# 2. Create environment file
-cp .env.example .env
-
-# 3. Configure environment variables
-DATABASE_URL=postgresql://user:pass@localhost:5432/mowthosos
-REDIS_URL=redis://localhost:6379/0
-MAPBOX_ACCESS_TOKEN=your_mapbox_token
-STRIPE_SECRET_KEY=your_stripe_key
-STRIPE_PUBLISHABLE_KEY=your_stripe_publishable_key
+git clone https://github.com/your-org/mowthosOS.git
+cd mowthosOS
 ```
 
-### Docker Deployment
+**2. Install Dependencies:**
+```bash
+# Install Poetry if not already installed
+curl -sSL https://install.python-poetry.org | python3 -
 
+# Install project dependencies
+poetry install
+
+# Install PyMammotion submodule
+git submodule update --init --recursive
+```
+
+**3. Environment Configuration:**
+```bash
+# Copy environment template
+cp .env.local.example .env.local
+
+# Edit configuration
+nano .env.local
+```
+
+**Required Environment Variables:**
+```bash
+# Mapbox API (required for clustering)
+MAPBOX_ACCESS_TOKEN=your_mapbox_token_here
+
+# Database (for production)
+DATABASE_URL=postgresql://user:pass@localhost/mowthos
+
+# Redis (for sessions)
+REDIS_URL=redis://localhost:6379
+
+# Security
+SECRET_KEY=your-secret-key-here
+```
+
+**4. Initialize Database:**
+```bash
+# Create database tables
+poetry run alembic upgrade head
+
+# Load initial data
+poetry run python scripts/init_data.py
+```
+
+### Development Setup
+
+**1. Start Development Server:**
+```bash
+# Start with auto-reload
+poetry run uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# Or use the run script
+poetry run python run.py
+```
+
+**2. Run Tests:**
+```bash
+# Run all tests
+poetry run pytest
+
+# Run specific test categories
+poetry run pytest tests/test_mower/
+poetry run pytest tests/test_cluster/
+
+# Run with coverage
+poetry run pytest --cov=src --cov-report=html
+```
+
+**3. Code Quality:**
+```bash
+# Format code
+poetry run black src/ tests/
+
+# Sort imports
+poetry run isort src/ tests/
+
+# Type checking
+poetry run mypy src/
+
+# Linting
+poetry run flake8 src/ tests/
+```
+
+### Production Deployment
+
+**1. Docker Deployment:**
+```bash
+# Build image
+docker build -t mowthos:latest .
+
+# Run container
+docker run -d \
+  --name mowthos \
+  -p 8000:8000 \
+  -e MAPBOX_ACCESS_TOKEN=$MAPBOX_TOKEN \
+  -e DATABASE_URL=$DATABASE_URL \
+  -e REDIS_URL=$REDIS_URL \
+  mowthos:latest
+```
+
+**2. Docker Compose:**
 ```yaml
-# docker-compose.yml
 version: '3.8'
 services:
-  api:
+  mowthos:
     build: .
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://user:pass@db:5432/mowthosos
-      - REDIS_URL=redis://redis:6379/0
+      - MAPBOX_ACCESS_TOKEN=${MAPBOX_TOKEN}
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
     depends_on:
-      - db
+      - postgres
       - redis
-      
-  db:
-    image: postgres:13
+  
+  postgres:
+    image: postgres:15
     environment:
-      POSTGRES_DB: mowthosos
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: pass
+      - POSTGRES_DB=mowthos
+      - POSTGRES_USER=mowthos
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      
+  
   redis:
-    image: redis:6-alpine
-    
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+
 volumes:
   postgres_data:
+  redis_data:
 ```
 
-```bash
-# Deploy with Docker Compose
-docker-compose up -d
-
-# Run database migrations
-docker-compose exec api alembic upgrade head
-
-# Verify deployment
-curl http://localhost:8000/health
+**3. Kubernetes Deployment:**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mowthos
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mowthos
+  template:
+    metadata:
+      labels:
+        app: mowthos
+    spec:
+      containers:
+      - name: mowthos
+        image: mowthos:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: MAPBOX_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: mowthos-secrets
+              key: mapbox-token
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: mowthos-secrets
+              key: database-url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: mowthos-secrets
+              key: redis-url
 ```
 
-### Manual Deployment
+### Monitoring & Health Checks
 
-```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-pip install -r Mowthos-Cluster-Logic/requirements.txt
-
-# 2. Initialize submodules
-git submodule update --init --recursive
-
-# 3. Set up database
-alembic upgrade head
-
-# 4. Run the application
-uvicorn main:app --host 0.0.0.0 --port 8000
+**1. Health Check Endpoint:**
+```http
+GET /health
 ```
 
-### Production Considerations
+**Response:**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "services": {
+    "database": "connected",
+    "redis": "connected",
+    "mapbox": "available",
+    "mammotion": "available"
+  },
+  "version": "1.0.0"
+}
+```
 
-**Security:**
-- Use HTTPS in production
-- Implement rate limiting
-- Set up proper CORS policies
-- Use secure session management
-- Implement API key authentication
+**2. Metrics Endpoint:**
+```http
+GET /metrics
+```
 
-**Performance:**
-- Use connection pooling for database
-- Implement Redis caching for frequently accessed data
-- Set up load balancing for multiple instances
-- Monitor with APM tools (New Relic, DataDog)
+**3. Logging Configuration:**
+```python
+# Structured logging for production
+LOGGING_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "json": {
+            "format": "%(asctime)s %(name)s %(levelname)s %(message)s",
+            "class": "pythonjsonlogger.jsonlogger.JsonFormatter"
+        }
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "json"
+        }
+    },
+    "root": {
+        "level": "INFO",
+        "handlers": ["console"]
+    }
+}
+```
 
-**Monitoring:**
-- Set up logging aggregation (ELK stack)
-- Implement health checks
-- Monitor mower connectivity status
-- Track API performance metrics
+### Security Considerations
+
+**1. Authentication:**
+- JWT tokens for API access
+- Session management with Redis
+- Rate limiting per user/IP
+- CORS configuration for web clients
+
+**2. Data Protection:**
+- Environment variables for secrets
+- Database connection encryption
+- API request/response validation
+- Input sanitization and validation
+
+**3. Network Security:**
+- HTTPS/TLS for all communications
+- Firewall rules for API access
+- VPN for internal communications
+- Regular security updates
 
 ---
 
 ## Future Enhancements
 
-### 1. Advanced Mower Fleet Management
+### Planned Features
 
-**Multi-Mower Coordination**
-- Intelligent scheduling across multiple mowers
-- Automatic failover when mowers are offline
-- Cross-cluster mower sharing during peak demand
-
-**Predictive Maintenance**
-- ML-based fault prediction
-- Automated maintenance scheduling
-- Parts inventory management
-
-### 2. Enhanced Geographic Intelligence
-
-**Advanced Clustering Algorithms**
+**1. Advanced Clustering Algorithms:**
 - Machine learning-based cluster optimization
-- Seasonal adaptation for mowing patterns
+- Dynamic cluster rebalancing
 - Weather-aware scheduling
+- Traffic pattern analysis
 
-**Precision Mapping**
-- Integration with satellite imagery
-- Real-time grass growth monitoring
-- Obstacle detection and mapping
+**2. Enhanced Mower Control:**
+- Multi-device coordination
+- Automatic error recovery
+- Predictive maintenance alerts
+- Battery optimization strategies
 
-### 3. Business Logic Expansion
+**3. User Experience:**
+- Real-time notifications
+- Mobile app integration
+- Web dashboard improvements
+- Customer support tools
 
-**Dynamic Pricing**
-- Demand-based pricing models
-- Seasonal rate adjustments
-- Loyalty program integration
+**4. Analytics & Reporting:**
+- Usage analytics dashboard
+- Performance metrics
+- Cost analysis tools
+- Environmental impact tracking
 
-**Service Quality Monitoring**
-- Customer satisfaction tracking
-- Automated quality assurance
-- Performance-based SLA management
+### Technical Roadmap
 
-### 4. Integration Ecosystem
+**Phase 1 (Q1 2024):**
+- ✅ Complete clustering logic migration
+- ✅ Production deployment setup
+- ✅ Basic monitoring and logging
+- 🔄 Advanced error handling
 
-**Smart Home Integration**
-- Home Assistant compatibility
-- Alexa/Google Assistant voice control
-- IoT sensor integration for lawn conditions
+**Phase 2 (Q2 2024):**
+- 🔄 Machine learning integration
+- 🔄 Real-time analytics
+- 🔄 Mobile app development
+- 🔄 Advanced user management
 
-**Mobile Applications**
-- Real-time mower tracking
-- Push notifications for status updates
-- Augmented reality lawn planning
+**Phase 3 (Q3 2024):**
+- 🔄 Multi-tenant architecture
+- 🔄 Advanced billing integration
+- 🔄 IoT device integration
+- 🔄 AI-powered optimization
 
-### 5. Sustainability Features
+**Phase 4 (Q4 2024):**
+- 🔄 International expansion
+- 🔄 Advanced security features
+- 🔄 Enterprise features
+- 🔄 API marketplace
 
-**Energy Optimization**
-- Solar charging integration
-- Grid-tied energy management
-- Carbon footprint tracking
+### Contributing
 
-**Environmental Monitoring**
-- Soil health assessment
-- Biodiversity impact tracking
-- Water usage optimization
+**Development Guidelines:**
+- Follow the [Development Guidelines](development-guidelines.md)
+- Write comprehensive tests for new features
+- Update documentation for API changes
+- Use conventional commit messages
+
+**Code Review Process:**
+- All changes require pull request review
+- Automated testing must pass
+- Code coverage requirements enforced
+- Security review for sensitive changes
+
+**Release Process:**
+- Semantic versioning for releases
+- Automated deployment pipelines
+- Rollback procedures documented
+- Release notes for all changes
 
 ---
 
 ## Conclusion
 
-MowthosOS represents a comprehensive solution for scalable robotic mower management, combining the robust device control capabilities of PyMammotion with the intelligent geographic clustering of Mowthos-Cluster-Logic. The proposed unified architecture provides a solid foundation for:
+MowthosOS represents a significant advancement in robotic mower management, combining the proven PyMammotion mower control capabilities with our integrated intelligent geographic clustering system. The proposed unified architecture provides a solid foundation for:
 
-- **Seamless mower control** across multiple communication protocols
-- **Intelligent clustering** for optimal service delivery
-- **Scalable payment processing** for commercial viability
-- **Professional deployment** with enterprise-grade features
+- **Scalable Operations**: Handle thousands of mowers and homes
+- **Intelligent Automation**: Optimize routes and schedules automatically
+- **User-Friendly Interface**: Simple APIs for web and mobile integration
+- **Enterprise Features**: Professional monitoring, billing, and support
 
-The modular design ensures extensibility for future enhancements while maintaining stability and performance for current operations.
+The migration from external submodules to integrated clustering logic has significantly improved the system's maintainability and performance, while maintaining all the advanced geographic intelligence capabilities.
 
-**Next Steps:**
-1. Implement the unified API gateway
-2. Integrate Stripe payment processing
-3. Enhance database models for production use
-4. Develop comprehensive testing suite
-5. Create deployment automation scripts
-6. Build monitoring and observability stack
-
-This architecture positions MowthosOS as a market-leading solution for robotic mower fleet management and shared lawn care services.
+For detailed technical information, see the [Development Guidelines](development-guidelines.md) and [Quick Reference](quick-reference.md) documentation.
