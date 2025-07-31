@@ -1,29 +1,35 @@
-# Core FastAPI dependencies
+
+# Web Framework
+
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
-# PyMammotion integration
+# Database
+sqlalchemy>=2.0.0
+asyncpg>=0.29.0
+alembic>=1.13.0
+
+# Authentication
+pyjwt>=2.8.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.6
+
+# Redis
+redis>=5.0.0
+hiredis>=2.3.0
+
+# Device Integration
 pymammotion
 
-# Development and testing dependencies
+# Utilities
+python-dotenv>=1.0.0
+httpx>=0.25.0
+python-dateutil>=2.8.0
+
+# Development
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
-pytest-cov>=4.1.0
-httpx>=0.25.0
+pytest-cov>=4.1.0 
 
-# Code quality and formatting
-black>=23.0.0
-isort>=5.12.0
-flake8>=6.0.0
-mypy>=1.6.0
-
-# Future dependencies (for later phases)
-# sqlalchemy>=2.0.0
-# psycopg2-binary>=2.9.0
-# redis>=5.0.0
-# stripe>=7.0.0
-# celery>=5.3.0
-# prometheus-client>=0.19.0
-# sentry-sdk[fastapi]>=1.38.0 
