@@ -26,6 +26,14 @@ class SubscriptionTier(str, Enum):
     ENTERPRISE = "enterprise"
 
 
+class SubscriptionType(str, Enum):
+    """Types of subscriptions"""
+    PLATFORM = "platform"  # General platform access
+    CLUSTER_MEMBER = "cluster_member"  # Neighbor in a cluster
+    CLUSTER_HOST = "cluster_host"  # Host leasing a mower
+    MAINTENANCE = "maintenance"  # Maintenance plans
+
+
 class SubscriptionStatus(str, Enum):
     """Subscription status"""
     ACTIVE = "active"
@@ -55,12 +63,64 @@ class InvoiceStatus(str, Enum):
     UNCOLLECTIBLE = "uncollectible"
 
 
+class ClusterSubscriptionPlan(Base):
+    """Subscription plans for cluster members"""
+    __tablename__ = "cluster_subscription_plans"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # Plan details
+    name = Column(String(100), nullable=False)
+    code = Column(String(50), unique=True, nullable=False)
+    description = Column(Text, nullable=True)
+    
+    # Pricing
+    monthly_price = Column(DECIMAL(10, 2), nullable=False)
+    annual_price = Column(DECIMAL(10, 2), nullable=True)
+    currency = Column(String(3), default="USD", nullable=False)
+    
+    # Stripe integration
+    stripe_product_id = Column(String(255), unique=True, nullable=True)
+    stripe_monthly_price_id = Column(String(255), unique=True, nullable=True)
+    stripe_annual_price_id = Column(String(255), unique=True, nullable=True)
+    
+    # Service levels
+    mowing_frequency = Column(String(50), nullable=False)  # weekly, biweekly, monthly
+    max_lawn_size_sqm = Column(Integer, nullable=True)
+    included_services = Column(JSON, nullable=False)  # edge_trimming, leaf_removal, etc.
+    priority_scheduling = Column(Boolean, default=False, nullable=False)
+    
+    # Features
+    features = Column(JSON, default=dict, nullable=False)
+    
+    # Status
+    is_active = Column(Boolean, default=True, nullable=False)
+    display_order = Column(Integer, default=0, nullable=False)
+    
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    
+    # Indexes
+    __table_args__ = (
+        Index("idx_plan_code", "code"),
+        Index("idx_plan_active", "is_active"),
+    )
+
+
 class Subscription(Base):
     """User subscriptions"""
     __tablename__ = "subscriptions"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    
+    # Subscription type
+    subscription_type = Column(SQLEnum(SubscriptionType), nullable=False)
+    
+    # For cluster memberships
+    cluster_id = Column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="SET NULL"), nullable=True)
+    cluster_plan_id = Column(UUID(as_uuid=True), ForeignKey("cluster_subscription_plans.id", ondelete="SET NULL"), nullable=True)
     
     # Subscription details
     tier = Column(SQLEnum(SubscriptionTier), default=SubscriptionTier.FREE, nullable=False)
