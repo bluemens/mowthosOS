@@ -1,4 +1,6 @@
-"""Authentication API endpoints"""
+"""
+Authentication API endpoints
+"""
 from typing import Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -16,7 +18,7 @@ from src.core.auth import (
     get_current_active_user,
 )
 from src.services.user import UserService, InvalidCredentialsError, UserAlreadyExistsError
-from src.models.database import User, UserRole
+from src.models.database import User, UserRole, UserAddress
 from src.core.config import settings
 
 
@@ -69,6 +71,92 @@ class UserResponse(BaseModel):
     role: str
     is_active: bool
     is_verified: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class UserUpdateRequest(BaseModel):
+    first_name: Optional[str] = Field(None, max_length=100)
+    last_name: Optional[str] = Field(None, max_length=100)
+    phone_number: Optional[str] = Field(None, max_length=20)
+    bio: Optional[str] = Field(None, max_length=500)
+    timezone: Optional[str] = Field(None, max_length=50)
+    locale: Optional[str] = Field(None, max_length=10)
+    
+    @validator('phone_number')
+    def validate_phone_number(cls, v):
+        if v is not None:
+            # Basic phone number validation (can be enhanced)
+            v = ''.join(filter(str.isdigit, v))
+            if len(v) < 10:
+                raise ValueError('Phone number must have at least 10 digits')
+        return v
+
+
+class EmailUpdateRequest(BaseModel):
+    new_email: EmailStr
+    password: str = Field(..., description="Current password for verification")
+
+
+class AddressRequest(BaseModel):
+    address_line1: str = Field(..., max_length=255)
+    address_line2: Optional[str] = Field(None, max_length=255)
+    city: str = Field(..., max_length=100)
+    state_province: str = Field(..., max_length=100)
+    postal_code: str = Field(..., max_length=20)
+    country: str = Field(default="US", max_length=2)
+    label: Optional[str] = Field(None, max_length=50)
+    is_primary: bool = Field(default=False)
+    
+    @validator('postal_code')
+    def validate_postal_code(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Postal code is required')
+        return v.strip()
+    
+    @validator('state_province')
+    def validate_state_province(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('State/Province is required')
+        return v.strip()
+
+
+class AddressUpdateRequest(BaseModel):
+    address_line1: Optional[str] = Field(None, max_length=255)
+    address_line2: Optional[str] = Field(None, max_length=255)
+    city: Optional[str] = Field(None, max_length=100)
+    state_province: Optional[str] = Field(None, max_length=100)
+    postal_code: Optional[str] = Field(None, max_length=20)
+    country: Optional[str] = Field(None, max_length=2)
+    
+    @validator('postal_code')
+    def validate_postal_code(cls, v):
+        if v is not None and len(v.strip()) == 0:
+            raise ValueError('Postal code cannot be empty')
+        return v.strip() if v else v
+    
+    @validator('state_province')
+    def validate_state_province(cls, v):
+        if v is not None and len(v.strip()) == 0:
+            raise ValueError('State/Province cannot be empty')
+        return v.strip() if v else v
+
+
+class AddressResponse(BaseModel):
+    id: str
+    address_line1: str
+    address_line2: Optional[str]
+    city: str
+    state_province: str
+    postal_code: str
+    country: str
+    latitude: Optional[str]
+    longitude: Optional[str]
+    label: Optional[str]
+    is_primary: bool
+    verified: bool
     created_at: datetime
     
     class Config:
@@ -256,6 +344,98 @@ async def get_current_user_info(
     return UserResponse.from_orm(current_user)
 
 
+@router.put("/profile", response_model=UserResponse)
+async def update_user_profile(
+    user_data: UserUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update user profile information"""
+    user_service = UserService(db)
+    
+    try:
+        # Only update fields that were provided
+        update_data = user_data.dict(exclude_unset=True)
+        
+        if update_data:
+            updated_user = await user_service.update_user(
+                user_id=current_user.id,
+                **update_data
+            )
+            
+            # Log profile update
+            await user_service.create_audit_log(
+                user_id=current_user.id,
+                event_type="profile_updated",
+                event_category="profile",
+                event_description="User updated profile information"
+            )
+            
+            return UserResponse.from_orm(updated_user)
+        else:
+            return UserResponse.from_orm(current_user)
+            
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update profile: {str(e)}"
+        )
+
+
+@router.put("/email", response_model=MessageResponse)
+async def update_user_email(
+    email_data: EmailUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update user email address (requires password verification)"""
+    user_service = UserService(db)
+    
+    try:
+        # Verify current password
+        if not await user_service.verify_password(current_user.id, email_data.password):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid password"
+            )
+        
+        # Check if new email is already taken
+        existing_user = await user_service.get_by_email(email_data.new_email)
+        if existing_user and existing_user.id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email address is already in use"
+            )
+        
+        # Update email
+        await user_service.update_user(
+            user_id=current_user.id,
+            email=email_data.new_email,
+            is_verified=False  # Require re-verification
+        )
+        
+        # TODO: Send verification email to new address
+        # For now, just log the change
+        
+        # Log email change
+        await user_service.create_audit_log(
+            user_id=current_user.id,
+            event_type="email_changed",
+            event_category="profile",
+            event_description=f"User changed email from {current_user.email} to {email_data.new_email}"
+        )
+        
+        return MessageResponse(message="Email updated successfully. Please verify your new email address.")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update email: {str(e)}"
+        )
+
+
 @router.post("/change-password", response_model=MessageResponse)
 async def change_password(
     old_password: str = Field(..., description="Current password"),
@@ -287,4 +467,123 @@ async def change_password(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to change password"
+        )
+
+
+@router.post("/addresses", response_model=AddressResponse, status_code=status.HTTP_201_CREATED)
+async def add_user_address(
+    address_data: AddressRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Add a new address for the current user"""
+    user_service = UserService(db)
+    
+    try:
+        address = await user_service.add_address(
+            user_id=current_user.id,
+            address_line1=address_data.address_line1,
+            address_line2=address_data.address_line2,
+            city=address_data.city,
+            state_province=address_data.state_province,
+            postal_code=address_data.postal_code,
+            country=address_data.country,
+            label=address_data.label,
+            is_primary=address_data.is_primary
+        )
+        
+        # Log address creation
+        await user_service.create_audit_log(
+            user_id=current_user.id,
+            event_type="address_added",
+            event_category="profile",
+            event_description=f"User added address: {address_data.city}, {address_data.state_province}"
+        )
+        
+        return AddressResponse.from_orm(address)
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to add address: {str(e)}"
+        )
+
+
+@router.get("/addresses/home", response_model=AddressResponse)
+async def get_user_address(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get the user's home address"""
+    user_service = UserService(db)
+    
+    try:
+        addresses = await user_service.get_user_addresses(current_user.id)
+        home_address = next((addr for addr in addresses if addr.is_primary), None)
+        
+        if not home_address:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No home address found"
+            )
+        
+        return AddressResponse.from_orm(home_address)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get address: {str(e)}"
+        )
+
+
+@router.put("/addresses/home", response_model=AddressResponse)
+async def update_user_address(
+    address_data: AddressUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update the user's home address"""
+    user_service = UserService(db)
+    
+    try:
+        # Get current home address
+        addresses = await user_service.get_user_addresses(current_user.id)
+        home_address = next((addr for addr in addresses if addr.is_primary), None)
+        
+        if not home_address:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No home address found to update"
+            )
+        
+        # Only update fields that were provided
+        update_data = address_data.dict(exclude_unset=True)
+        
+        if update_data:
+            updated_address = await user_service.update_address(
+                address_id=home_address.id,
+                user_id=current_user.id,
+                **update_data
+            )
+            
+            # Log address update
+            await user_service.create_audit_log(
+                user_id=current_user.id,
+                event_type="address_updated",
+                event_category="profile",
+                event_description=f"User updated home address: {update_data.get('city', 'Unknown')}, {update_data.get('state_province', 'Unknown')}"
+            )
+            
+            return AddressResponse.from_orm(updated_address)
+        else:
+            return AddressResponse.from_orm(home_address)
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update address: {str(e)}"
         )

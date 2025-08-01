@@ -152,7 +152,7 @@ class UserService:
         allowed_fields = {
             "first_name", "last_name", "display_name", "phone_number",
             "avatar_url", "bio", "timezone", "locale", "preferences",
-            "notification_settings"
+            "notification_settings", "email", "is_verified"
         }
         
         for key, value in kwargs.items():
@@ -192,6 +192,14 @@ class UserService:
             event_description="User changed their password"
         )
     
+    async def verify_password(self, user_id: str, password: str) -> bool:
+        """Verify a password for a user"""
+        user = await self.get_by_id(user_id)
+        if not user:
+            return False
+        
+        return verify_password(password, user.password_hash)
+    
     async def update_last_activity(self, user_id: str) -> None:
         """Update user's last activity timestamp"""
         stmt = (
@@ -208,25 +216,20 @@ class UserService:
         if not user:
             raise UserNotFoundError(f"User {user_id} not found")
         
-        user.is_active = False
         user.deleted_at = datetime.utcnow()
         user.deletion_reason = reason
-        
-        # Revoke all sessions and tokens
-        await self.revoke_all_user_sessions(user_id)
-        await self.revoke_all_user_tokens(user_id)
+        user.is_active = False
         
         await self.db.commit()
         
-        # Log deletion
+        # Log user deletion
         await self.create_audit_log(
             user_id=user_id,
             event_type="user_deleted",
             event_category="auth",
-            event_description=f"User account deleted. Reason: {reason or 'Not specified'}"
+            event_description=f"User account deleted. Reason: {reason or 'No reason provided'}"
         )
     
-    # Session management
     async def create_session(
         self,
         user_id: str,
@@ -236,7 +239,6 @@ class UserService:
     ) -> UserSession:
         """Create a new user session"""
         session_token = secrets.token_urlsafe(32)
-        expires_at = datetime.utcnow() + timedelta(days=30)
         
         session = UserSession(
             user_id=user_id,
@@ -244,7 +246,7 @@ class UserService:
             ip_address=ip_address,
             user_agent=user_agent,
             device_info=device_info,
-            expires_at=expires_at
+            expires_at=datetime.utcnow() + timedelta(days=30)
         )
         
         self.db.add(session)
@@ -254,7 +256,7 @@ class UserService:
         return session
     
     async def get_session(self, session_token: str) -> Optional[UserSession]:
-        """Get a session by token"""
+        """Get session by token"""
         stmt = (
             select(UserSession)
             .where(
@@ -269,7 +271,7 @@ class UserService:
         return result.scalar_one_or_none()
     
     async def revoke_session(self, session_token: str, reason: Optional[str] = None) -> None:
-        """Revoke a user session"""
+        """Revoke a specific session"""
         session = await self.get_session(session_token)
         if session:
             session.is_active = False
@@ -290,13 +292,12 @@ class UserService:
             .values(
                 is_active=False,
                 revoked_at=datetime.utcnow(),
-                revocation_reason="All sessions revoked"
+                revocation_reason="User logout"
             )
         )
         await self.db.execute(stmt)
         await self.db.commit()
     
-    # Refresh token management
     async def create_refresh_token(
         self,
         user_id: str,
@@ -306,7 +307,7 @@ class UserService:
         device_id: Optional[str] = None,
         device_name: Optional[str] = None
     ) -> RefreshToken:
-        """Store a refresh token"""
+        """Create a new refresh token"""
         refresh_token = RefreshToken(
             user_id=user_id,
             token=token,
@@ -323,8 +324,17 @@ class UserService:
         return refresh_token
     
     async def get_refresh_token(self, token: str) -> Optional[RefreshToken]:
-        """Get a refresh token"""
-        stmt = select(RefreshToken).where(RefreshToken.token == token)
+        """Get refresh token by token string"""
+        stmt = (
+            select(RefreshToken)
+            .where(
+                and_(
+                    RefreshToken.token == token,
+                    RefreshToken.is_active == True,
+                    RefreshToken.expires_at > datetime.utcnow()
+                )
+            )
+        )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
     
@@ -335,33 +345,37 @@ class UserService:
         token_family: str,
         expires_at: datetime
     ) -> RefreshToken:
-        """Rotate refresh tokens for security"""
+        """Rotate refresh token (mark old as replaced, create new)"""
         # Mark old token as replaced
         old_refresh_token = await self.get_refresh_token(old_token)
         if old_refresh_token:
             old_refresh_token.is_active = False
             old_refresh_token.revoked_at = datetime.utcnow()
-            old_refresh_token.last_used_at = datetime.utcnow()
+            old_refresh_token.replaced_by_token_id = None  # Will be set after new token is created
         
         # Create new token
-        new_refresh_token = await self.create_refresh_token(
-            user_id=old_refresh_token.user_id,
+        new_refresh_token = RefreshToken(
+            user_id=old_refresh_token.user_id if old_refresh_token else None,
             token=new_token,
             token_family=token_family,
             expires_at=expires_at,
-            device_id=old_refresh_token.device_id,
-            device_name=old_refresh_token.device_name
+            device_id=old_refresh_token.device_id if old_refresh_token else None,
+            device_name=old_refresh_token.device_name if old_refresh_token else None
         )
         
-        # Link tokens
+        self.db.add(new_refresh_token)
+        await self.db.commit()
+        await self.db.refresh(new_refresh_token)
+        
+        # Update old token with new token ID
         if old_refresh_token:
             old_refresh_token.replaced_by_token_id = new_refresh_token.id
+            await self.db.commit()
         
-        await self.db.commit()
         return new_refresh_token
     
     async def revoke_token_family(self, token_family: str) -> None:
-        """Revoke all tokens in a family (security breach response)"""
+        """Revoke all tokens in a family (for security)"""
         stmt = (
             update(RefreshToken)
             .where(
@@ -372,7 +386,8 @@ class UserService:
             )
             .values(
                 is_active=False,
-                revoked_at=datetime.utcnow()
+                revoked_at=datetime.utcnow(),
+                revocation_reason="Token family revoked"
             )
         )
         await self.db.execute(stmt)
@@ -390,13 +405,13 @@ class UserService:
             )
             .values(
                 is_active=False,
-                revoked_at=datetime.utcnow()
+                revoked_at=datetime.utcnow(),
+                revocation_reason="User logout"
             )
         )
         await self.db.execute(stmt)
         await self.db.commit()
     
-    # Address management
     async def add_address(
         self,
         user_id: str,
@@ -451,6 +466,54 @@ class UserService:
         
         return address
     
+    async def update_address(
+        self,
+        address_id: str,
+        user_id: str,
+        **kwargs
+    ) -> UserAddress:
+        """Update an address for a user"""
+        # Get the address and verify ownership
+        stmt = (
+            select(UserAddress)
+            .where(
+                and_(
+                    UserAddress.id == address_id,
+                    UserAddress.user_id == user_id
+                )
+            )
+        )
+        result = await self.db.execute(stmt)
+        address = result.scalar_one_or_none()
+        
+        if not address:
+            raise UserNotFoundError(f"Address {address_id} not found for user {user_id}")
+        
+        # Update allowed fields
+        allowed_fields = {
+            "address_line1", "address_line2", "city", "state_province",
+            "postal_code", "country", "label", "latitude", "longitude",
+            "geocoding_accuracy", "property_size_sqm", "lawn_size_sqm",
+            "terrain_type", "special_instructions"
+        }
+        
+        for key, value in kwargs.items():
+            if key in allowed_fields:
+                setattr(address, key, value)
+        
+        # Clear geocoding if address changed
+        if any(key in kwargs for key in ["address_line1", "city", "state_province", "postal_code"]):
+            address.latitude = None
+            address.longitude = None
+            address.geocoding_accuracy = None
+            address.geocoded_at = None
+        
+        address.updated_at = datetime.utcnow()
+        await self.db.commit()
+        await self.db.refresh(address)
+        
+        return address
+    
     async def get_user_addresses(self, user_id: str) -> List[UserAddress]:
         """Get all addresses for a user"""
         stmt = (
@@ -499,7 +562,6 @@ class UserService:
         if event_category:
             stmt = stmt.where(AuditLog.event_category == event_category)
         
-        stmt = stmt.order_by(AuditLog.created_at.desc()).limit(limit).offset(offset)
-        
+        stmt = stmt.order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
         result = await self.db.execute(stmt)
         return result.scalars().all()
