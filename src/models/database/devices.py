@@ -53,6 +53,8 @@ class MowerDevice(Base):
     # Ownership
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     cluster_id = Column(UUID(as_uuid=True), ForeignKey("clusters.id", ondelete="SET NULL"), nullable=True)
+    mammotion_account = Column(String(255), nullable=True)  # Email used for Mammotion login
+    device_nickname = Column(String(100), nullable=True)  # User-friendly nickname
     
     # Device info from PyMammotion
     firmware_version = Column(String(50), nullable=True)

@@ -6,9 +6,17 @@ import numpy as np
 import os
 import logging
 import time
+from uuid import UUID
+from datetime import datetime
 
+from sqlalchemy.orm import Session
+from sqlalchemy import and_, text
 from sklearn.neighbors import BallTree
+from geopy.distance import geodesic
+
 from ...models.schemas import Address
+from ...models.database.users import User, UserRole, UserAddress
+from ...models.database.clusters import Cluster, ClusterStatus
 from ...core.config import settings
 from .mapbox import MapboxService
 
@@ -19,10 +27,8 @@ EARTH_RADIUS_M = 6371000
 RADIUS_METERS = 80
 RADIUS_RADIANS = RADIUS_METERS / EARTH_RADIUS_M
 
-# CSV file paths
+# CSV file paths for addressable market discovery
 ADDRESS_CSV = os.path.join(os.path.dirname(__file__), '../../../Mowthos-Cluster-Logic/olmsted_addresses_559xx.csv')
-HOST_HOMES_CSV = os.path.join(os.path.dirname(__file__), '../../../Mowthos-Cluster-Logic/host_homes.csv')
-NEIGHBOR_HOMES_CSV = os.path.join(os.path.dirname(__file__), '../../../Mowthos-Cluster-Logic/neighbor_homes.csv')
 
 class ClusterEngine:
     """Engine for geographic clustering computations."""
@@ -30,17 +36,15 @@ class ClusterEngine:
     def __init__(self):
         """Initialize the cluster engine."""
         self.all_addresses: List[Dict[str, Any]] = []
-        self.host_homes: List[Dict[str, Any]] = []
-        self.neighbor_homes: List[Dict[str, Any]] = []
         self.ball_tree: Optional[BallTree] = None
         self.mapbox_service = MapboxService(settings.mapbox_access_token)
         
     async def load_address_data(self) -> None:
-        """Load address data from CSV files."""
+        """Load address data from CSV files for addressable market discovery."""
         try:
             if os.path.exists(ADDRESS_CSV):
                 self.all_addresses = load_addresses_from_csv(ADDRESS_CSV)
-                logger.info(f"Loaded {len(self.all_addresses)} addresses from CSV")
+                logger.info(f"Loaded {len(self.all_addresses)} addresses from CSV for market discovery")
             else:
                 logger.warning(f"Address CSV not found at {ADDRESS_CSV}")
                 self.all_addresses = []
@@ -52,23 +56,432 @@ class ClusterEngine:
         except Exception as e:
             logger.error(f"Failed to load address data: {str(e)}")
             raise
+
+    async def register_host_home_db(
+        self,
+        db: Session,
+        user_id: UUID,
+        address_id: UUID,
+        mapbox_service: MapboxService
+    ) -> Dict[str, Any]:
+        """
+        Register a host home in the database and create a cluster.
+        
+        Args:
+            db: Database session
+            user_id: ID of the user registering as host
+            address_id: ID of the user's address
+            mapbox_service: Mapbox service for geocoding
             
+        Returns:
+            Dictionary with registration results
+        """
+        try:
+            # 1. Verify user role
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user or user.role != UserRole.HOST:
+                return {"success": False, "message": "User must be HOST role to register as host"}
+            
+            # 2. Verify address ownership
+            address = db.query(UserAddress).filter(
+                UserAddress.id == address_id,
+                UserAddress.user_id == user_id
+            ).first()
+            if not address:
+                return {"success": False, "message": "Address not found or not owned by user"}
+            
+            # 3. Check if user already hosts a cluster
+            existing_cluster = db.query(Cluster).filter(
+                Cluster.host_user_id == user_id,
+                Cluster.status.in_([ClusterStatus.ACTIVE, ClusterStatus.PENDING])
+            ).first()
+            if existing_cluster:
+                return {"success": False, "message": "User already hosts a cluster"}
+            
+            # 4. Validate address with Mapbox
+            address_str = f"{address.address_line1}, {address.city}, {address.state_province}"
+            validated = await mapbox_service.validate_address(address_str)
+            if not validated:
+                return {"success": False, "message": "Invalid address"}
+            
+            # 5. Update address with geocoding data
+            address.latitude = str(validated['latitude'])
+            address.longitude = str(validated['longitude'])
+            address.verified = True
+            address.geocoded_at = datetime.now()
+            
+            # 6. Create cluster
+            cluster = Cluster(
+                host_user_id=user_id,
+                host_address_id=address_id,
+                center_latitude=validated['latitude'],
+                center_longitude=validated['longitude'],
+                name=f"{address.address_line1} Cluster",
+                status=ClusterStatus.PENDING,
+                max_members=5,
+                current_members=0
+            )
+            db.add(cluster)
+            db.commit()
+            
+            logger.info(f"Created cluster {cluster.id} for host {user_id} at {address_str}")
+            
+            return {
+                "success": True,
+                "cluster_id": str(cluster.id),
+                "cluster_name": cluster.name,
+                "address": address_str,
+                "latitude": validated['latitude'],
+                "longitude": validated['longitude']
+            }
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to register host: {str(e)}")
+            return {"success": False, "message": f"Registration failed: {str(e)}"}
+
+    async def discover_existing_neighbors_for_host_db(
+        self,
+        db: Session,
+        cluster_id: UUID,
+        mapbox_service: MapboxService,
+        radius_meters: int = 80
+    ) -> List[Dict[str, Any]]:
+        """
+        Find existing platform users who could join the cluster.
+        Returns verified user addresses within radius.
+        
+        Args:
+            db: Database session
+            cluster_id: ID of the cluster
+            mapbox_service: Mapbox service for road-aware filtering
+            radius_meters: Search radius in meters
+            
+        Returns:
+            List of qualified neighbor addresses with user information
+        """
+        try:
+            # Get cluster details
+            cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                logger.warning(f"Cluster {cluster_id} not found")
+                return []
+            
+            # Find verified user addresses within radius
+            query = text("""
+                SELECT 
+                    ua.id,
+                    ua.address_line1,
+                    ua.city,
+                    ua.state_province,
+                    ua.postal_code,
+                    ua.latitude,
+                    ua.longitude,
+                    u.id as user_id,
+                    u.role,
+                    u.display_name,
+                    u.email
+                FROM user_addresses ua
+                JOIN users u ON ua.user_id = u.id
+                WHERE ua.verified = true
+                AND ua.id != :host_address_id
+                AND u.role IN ('neighbor', 'user')
+                AND ST_DWithin(
+                    ST_MakePoint(ua.longitude::float, ua.latitude::float),
+                    ST_MakePoint(:host_lon::float, :host_lat::float),
+                    :radius_meters
+                )
+            """)
+            
+            candidates = db.execute(query, {
+                "host_address_id": cluster.host_address_id,
+                "host_lat": cluster.center_latitude,
+                "host_lon": cluster.center_longitude,
+                "radius_meters": radius_meters
+            }).fetchall()
+            
+            # Road-aware filtering
+            qualified_neighbors = []
+            for candidate in candidates:
+                try:
+                    is_accessible = await mapbox_service.is_accessible_without_crossing_road(
+                        (cluster.center_latitude, cluster.center_longitude),
+                        (float(candidate.latitude), float(candidate.longitude))
+                    )
+                    
+                    if is_accessible:
+                        qualified_neighbors.append({
+                            "address_id": str(candidate.id),
+                            "user_id": str(candidate.user_id),
+                            "address": f"{candidate.address_line1}, {candidate.city}, {candidate.state_province}",
+                            "user_role": candidate.role,
+                            "user_name": candidate.display_name,
+                            "user_email": candidate.email,
+                            "latitude": float(candidate.latitude),
+                            "longitude": float(candidate.longitude),
+                            "source": "platform_user"
+                        })
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid coordinates for address {candidate.id}: {str(e)}")
+                    continue
+            
+            logger.info(f"Found {len(qualified_neighbors)} qualified existing neighbors for cluster {cluster_id}")
+            return qualified_neighbors
+            
+        except Exception as e:
+            logger.error(f"Failed to discover existing neighbors: {str(e)}")
+            return []
+
+    async def discover_addressable_market_for_host_db(
+        self,
+        db: Session,
+        cluster_id: UUID,
+        mapbox_service: MapboxService,
+        radius_meters: int = 80
+    ) -> Dict[str, Any]:
+        """
+        Find total addressable market size using CSV data.
+        Returns market statistics and potential addresses.
+        
+        Args:
+            db: Database session
+            cluster_id: ID of the cluster
+            mapbox_service: Mapbox service for road-aware filtering
+            radius_meters: Search radius in meters
+            
+        Returns:
+            Dictionary with market analysis
+        """
+        try:
+            # Get cluster details
+            cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                return {"total_addresses": 0, "qualified_addresses": 0, "potential_addresses": []}
+            
+            # Load address data if not already loaded
+            if not self.all_addresses:
+                await self.load_address_data()
+            
+            if not self.all_addresses:
+                logger.warning("No address data available for market discovery")
+                return {"total_addresses": 0, "qualified_addresses": 0, "potential_addresses": []}
+            
+            # Build BallTree for all candidates
+            candidate_coords = np.array([[c['latitude'], c['longitude']] for c in self.all_addresses])
+            candidate_coords_rad = np.radians(candidate_coords)
+            tree = BallTree(candidate_coords_rad, metric='haversine')
+            
+            # Find addresses within radius
+            host_latlon_rad = np.radians([[cluster.center_latitude, cluster.center_longitude]])
+            idxs = tree.query_radius(host_latlon_rad, r=RADIUS_RADIANS)[0]
+            
+            # Road-aware filtering
+            qualified_addresses = []
+            for idx in idxs:
+                candidate = self.all_addresses[idx]
+                
+                # Skip if this is the host address
+                host_address_str = f"{cluster.host_address.address_line1}, {cluster.host_address.city}, {cluster.host_address.state_province}"
+                if candidate['full_address'].lower() == host_address_str.lower():
+                    continue
+                
+                # Road-aware check
+                try:
+                    is_accessible = await mapbox_service.is_accessible_without_crossing_road(
+                        (cluster.center_latitude, cluster.center_longitude),
+                        (candidate['latitude'], candidate['longitude'])
+                    )
+                    
+                    if is_accessible:
+                        qualified_addresses.append({
+                            "address": candidate['full_address'],
+                            "latitude": candidate['latitude'],
+                            "longitude": candidate['longitude'],
+                            "source": "addressable_market"
+                        })
+                except Exception as e:
+                    logger.warning(f"Failed road-aware check for {candidate['full_address']}: {str(e)}")
+                    continue
+            
+            market_coverage = (len(qualified_addresses) / len(self.all_addresses)) * 100 if self.all_addresses else 0
+            
+            logger.info(f"Market analysis for cluster {cluster_id}: {len(qualified_addresses)} qualified out of {len(self.all_addresses)} total addresses")
+            
+            return {
+                "total_addresses": len(self.all_addresses),
+                "addresses_within_radius": len(idxs),
+                "qualified_addresses": len(qualified_addresses),
+                "potential_addresses": qualified_addresses,
+                "market_coverage_percentage": market_coverage
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to discover addressable market: {str(e)}")
+            return {"total_addresses": 0, "qualified_addresses": 0, "potential_addresses": []}
+
+    async def analyze_cluster_market_db(
+        self,
+        db: Session,
+        cluster_id: UUID,
+        mapbox_service: MapboxService,
+        radius_meters: int = 80
+    ) -> Dict[str, Any]:
+        """
+        Complete market analysis for a cluster.
+        Returns both existing platform users and total addressable market.
+        
+        Args:
+            db: Database session
+            cluster_id: ID of the cluster
+            mapbox_service: Mapbox service for road-aware filtering
+            radius_meters: Search radius in meters
+            
+        Returns:
+            Dictionary with complete market analysis
+        """
+        try:
+            # Get existing platform users
+            existing_neighbors = await self.discover_existing_neighbors_for_host_db(
+                db, cluster_id, mapbox_service, radius_meters
+            )
+            
+            # Get total addressable market
+            market_analysis = await self.discover_addressable_market_for_host_db(
+                db, cluster_id, mapbox_service, radius_meters
+            )
+            
+            # Calculate insights
+            adoption_rate = (len(existing_neighbors) / market_analysis["qualified_addresses"]) * 100 if market_analysis["qualified_addresses"] > 0 else 0
+            growth_potential = market_analysis["qualified_addresses"] - len(existing_neighbors)
+            
+            return {
+                "cluster_id": str(cluster_id),
+                "existing_platform_users": {
+                    "count": len(existing_neighbors),
+                    "users": existing_neighbors
+                },
+                "addressable_market": {
+                    "total_addresses": market_analysis["total_addresses"],
+                    "qualified_addresses": market_analysis["qualified_addresses"],
+                    "market_coverage_percentage": market_analysis["market_coverage_percentage"],
+                    "potential_addresses": market_analysis["potential_addresses"]
+                },
+                "market_insights": {
+                    "platform_adoption_rate": adoption_rate,
+                    "growth_potential": growth_potential,
+                    "radius_meters": radius_meters
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to analyze cluster market: {str(e)}")
+            return {
+                "cluster_id": str(cluster_id),
+                "existing_platform_users": {"count": 0, "users": []},
+                "addressable_market": {"total_addresses": 0, "qualified_addresses": 0, "potential_addresses": []},
+                "market_insights": {"platform_adoption_rate": 0, "growth_potential": 0, "radius_meters": radius_meters}
+            }
+
+    async def find_qualified_host_for_neighbor_db(
+        self,
+        db: Session,
+        neighbor_address_id: UUID,
+        mapbox_service: MapboxService,
+        radius_meters: int = 80
+    ) -> List[Dict[str, Any]]:
+        """
+        For a given neighbor address, find all registered host homes for which this address qualifies as a neighbor.
+        
+        Args:
+            db: Database session
+            neighbor_address_id: ID of the neighbor's address
+            mapbox_service: Mapbox service for road-aware filtering
+            radius_meters: Search radius in meters
+            
+        Returns:
+            List of qualified host clusters
+        """
+        try:
+            # Get neighbor address details
+            neighbor_address = db.query(UserAddress).filter(
+                UserAddress.id == neighbor_address_id,
+                UserAddress.verified == True
+            ).first()
+            if not neighbor_address:
+                logger.warning(f"Neighbor address {neighbor_address_id} not found or not verified")
+                return []
+            
+            # Find all active clusters within radius
+            query = text("""
+                SELECT 
+                    c.id as cluster_id,
+                    c.name,
+                    c.center_latitude,
+                    c.center_longitude,
+                    c.max_members,
+                    c.current_members,
+                    c.status,
+                    ua.address_line1,
+                    ua.city,
+                    ua.state_province,
+                    u.display_name as host_name
+                FROM clusters c
+                JOIN user_addresses ua ON c.host_address_id = ua.id
+                JOIN users u ON c.host_user_id = u.id
+                WHERE c.status = 'active'
+                AND c.is_accepting_members = true
+                AND c.current_members < c.max_members
+                AND ST_DWithin(
+                    ST_MakePoint(ua.longitude::float, ua.latitude::float),
+                    ST_MakePoint(:neighbor_lon::float, :neighbor_lat::float),
+                    :radius_meters
+                )
+            """)
+            
+            candidates = db.execute(query, {
+                "neighbor_lat": float(neighbor_address.latitude),
+                "neighbor_lon": float(neighbor_address.longitude),
+                "radius_meters": radius_meters
+            }).fetchall()
+            
+            # Road-aware filtering
+            qualified_hosts = []
+            for candidate in candidates:
+                try:
+                    is_accessible = await mapbox_service.is_accessible_without_crossing_road(
+                        (candidate.center_latitude, candidate.center_longitude),
+                        (float(neighbor_address.latitude), float(neighbor_address.longitude))
+                    )
+                    
+                    if is_accessible:
+                        qualified_hosts.append({
+                            "cluster_id": str(candidate.cluster_id),
+                            "cluster_name": candidate.name,
+                            "host_address": f"{candidate.address_line1}, {candidate.city}, {candidate.state_province}",
+                            "host_name": candidate.host_name,
+                            "max_members": candidate.max_members,
+                            "current_members": candidate.current_members,
+                            "available_slots": candidate.max_members - candidate.current_members,
+                            "status": candidate.status
+                        })
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid coordinates for cluster {candidate.cluster_id}: {str(e)}")
+                    continue
+            
+            logger.info(f"Found {len(qualified_hosts)} qualified hosts for neighbor address {neighbor_address_id}")
+            return qualified_hosts
+            
+        except Exception as e:
+            logger.error(f"Failed to find qualified hosts: {str(e)}")
+            return []
+
     async def find_neighbors_within_radius(
         self,
         latitude: float,
         longitude: float,
         radius_meters: float
     ) -> List[Address]:
-        """Find all addresses within specified radius.
-        
-        Args:
-            latitude: Center point latitude
-            longitude: Center point longitude
-            radius_meters: Search radius in meters
-            
-        Returns:
-            List of addresses within radius
-        """
+        """Find all addresses within specified radius."""
         if not self.ball_tree:
             logger.warning("BallTree not initialized, loading address data...")
             await self.load_address_data()
@@ -116,210 +529,10 @@ class ClusterEngine:
         lat2: float,
         lon2: float
     ) -> float:
-        """Calculate distance between two points.
-        
-        Args:
-            lat1: First point latitude
-            lon1: First point longitude
-            lat2: Second point latitude
-            lon2: Second point longitude
-            
-        Returns:
-            Distance in meters
-        """
-        from geopy.distance import geodesic
-        
+        """Calculate distance between two points."""
         distance = geodesic((lat1, lon1), (lat2, lon2)).meters
         return distance
-        
-    async def find_clusters_near_point(
-        self,
-        latitude: float,
-        longitude: float,
-        search_radius_km: float = 5.0
-    ) -> List[Dict[str, Any]]:
-        """Find clusters near a point.
-        
-        Args:
-            latitude: Center point latitude
-            longitude: Center point longitude
-            search_radius_km: Search radius in kilometers
-            
-        Returns:
-            List of nearby clusters
-        """
-        try:
-            # Convert to address string for functions
-            address_str = f"Unknown Street, Unknown City, Unknown State"
-            
-            # Use function to find qualified hosts
-            qualified_hosts = find_qualified_host_for_neighbor(address_str)
-            
-            # Convert to cluster format
-            clusters = []
-            for host_addr in qualified_hosts:
-                cluster_info = {
-                    "cluster_id": f"cluster_{len(clusters)}",
-                    "host_address": host_addr,
-                    "distance_km": 0,  # Would calculate actual distance
-                    "member_count": 0,  # Would get from database
-                    "max_capacity": 5
-                }
-                clusters.append(cluster_info)
-            
-            logger.info(f"Found {len(clusters)} clusters near point ({latitude}, {longitude})")
-            return clusters
-            
-        except Exception as e:
-            logger.error(f"Failed to find clusters near point: {str(e)}")
-            return []
-            
-    async def validate_cluster_formation(
-        self,
-        host_address: Address,
-        neighbor_addresses: List[Address]
-    ) -> Dict[str, Any]:
-        """Validate if a cluster formation is valid.
-        
-        Args:
-            host_address: Address of the host home
-            neighbor_addresses: List of potential neighbor addresses
-            
-        Returns:
-            Validation results
-        """
-        try:
-            # Register host home
-            host_result = register_host_home(
-                host_address.street,
-                host_address.city,
-                host_address.state,
-                host_address.latitude,
-                host_address.longitude
-            )
-            
-            if not host_result.get('success'):
-                return {
-                    "valid": False,
-                    "reason": f"Failed to register host: {host_result.get('message')}",
-                    "qualified_neighbors": []
-                }
-            
-            # Register neighbor homes
-            qualified_neighbors = []
-            for neighbor in neighbor_addresses:
-                neighbor_result = register_neighbor_home(
-                    neighbor.street,
-                    neighbor.city,
-                    neighbor.state,
-                    neighbor.latitude,
-                    neighbor.longitude
-                )
-                
-                if neighbor_result.get('success'):
-                    qualified_neighbors.append(neighbor)
-            
-            # Use function to discover neighbors for this host
-            host_address_str = f"{host_address.street}, {host_address.city}, {host_address.state}"
-            discovered_neighbors = discover_neighbors_for_host(host_address_str)
-            
-            validation_result = {
-                "valid": len(qualified_neighbors) >= 3,  # Minimum 3 homes for cluster
-                "qualified_neighbors": qualified_neighbors,
-                "discovered_neighbors": discovered_neighbors,
-                "total_neighbors": len(qualified_neighbors),
-                "min_neighbors_required": 3
-            }
-            
-            logger.info(f"Cluster validation: {validation_result['valid']}, {len(qualified_neighbors)} qualified neighbors")
-            return validation_result
-            
-        except Exception as e:
-            logger.error(f"Failed to validate cluster formation: {str(e)}")
-            return {
-                "valid": False,
-                "reason": f"Validation error: {str(e)}",
-                "qualified_neighbors": []
-            }
-            
-    async def optimize_cluster_assignment(
-        self,
-        addresses: List[Address],
-        max_clusters: Optional[int] = None
-    ) -> List[List[Address]]:
-        """Optimize cluster assignment.
-        
-        Args:
-            addresses: List of addresses to assign to clusters
-            max_clusters: Maximum number of clusters to create
-            
-        Returns:
-            List of address clusters
-        """
-        try:
-            if not addresses:
-                return []
-            
-            # Register all addresses as potential hosts first
-            host_results = []
-            for addr in addresses:
-                result = register_host_home(
-                    addr.street,
-                    addr.city,
-                    addr.state,
-                    addr.latitude,
-                    addr.longitude
-                )
-                host_results.append((addr, result))
-            
-            # Find qualified neighbors for each potential host
-            clusters = []
-            used_addresses = set()
-            
-            for addr, host_result in host_results:
-                if addr in used_addresses:
-                    continue
-                
-                if not host_result.get('success'):
-                    continue
-                
-                # Use function to find qualified neighbors
-                addr_str = f"{addr.street}, {addr.city}, {addr.state}"
-                qualified_neighbors = find_qualified_host_for_neighbor(addr_str)
-                
-                # Create cluster with this host and its qualified neighbors
-                cluster = [addr]
-                used_addresses.add(addr)
-                
-                # Add qualified neighbors to this cluster
-                for neighbor_addr in addresses:
-                    if neighbor_addr in used_addresses:
-                        continue
-                    
-                    neighbor_str = f"{neighbor_addr.street}, {neighbor_addr.city}, {neighbor_addr.state}"
-                    if neighbor_str in qualified_neighbors:
-                        cluster.append(neighbor_addr)
-                        used_addresses.add(neighbor_addr)
-                        
-                        # Stop if cluster is full
-                        if len(cluster) >= 5:  # Max cluster size
-                            break
-                
-                # Only add cluster if it meets minimum size
-                if len(cluster) >= 3:
-                    clusters.append(cluster)
-                
-                # Stop if we've reached max clusters
-                if max_clusters and len(clusters) >= max_clusters:
-                    break
-            
-            logger.info(f"Optimized cluster assignment: {len(clusters)} clusters created")
-            return clusters
-            
-        except Exception as e:
-            logger.error(f"Failed to optimize cluster assignment: {str(e)}")
-            return []
-            
+
     async def _build_ball_tree(self) -> None:
         """Build BallTree for efficient neighbor search."""
         if not self.all_addresses:
@@ -349,176 +562,32 @@ class ClusterEngine:
             logger.error(f"Failed to build BallTree: {str(e)}")
             self.ball_tree = None
 
-# Core Mowthos functions (copied from Mowthos-Cluster-Logic)
-
-def ensure_host_homes_csv():
-    """Create a template host_homes.csv if it doesn't exist."""
-    if not os.path.exists(HOST_HOMES_CSV):
-        with open(HOST_HOMES_CSV, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['address', 'city', 'state', 'latitude', 'longitude'])
-            writer.writeheader()
-            # Example row
-            writer.writerow({
-                'address': '123 Main St',
-                'city': 'Rochester',
-                'state': 'MN',
-                'latitude': 44.0123,
-                'longitude': -92.1234
-            })
-
-def ensure_neighbor_homes_csv():
-    """Create a template neighbor_homes.csv if it doesn't exist."""
-    if not os.path.exists(NEIGHBOR_HOMES_CSV):
-        with open(NEIGHBOR_HOMES_CSV, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['address', 'city', 'state', 'latitude', 'longitude'])
-            writer.writeheader()
-            # Example row
-            writer.writerow({
-                'address': '456 Elm St',
-                'city': 'Rochester',
-                'state': 'MN',
-                'latitude': 44.0124,
-                'longitude': -92.1235
-            })
-
+# Helper function for loading CSV data (kept for addressable market discovery)
 def load_addresses_from_csv(path: str) -> List[dict]:
     """Load addresses from a CSV file, returning a list of dicts with full address and lat/lon."""
     addresses = []
-    with open(path, newline='') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            # Handle different CSV structures
-            if 'state' in row:
-                state = row['state']
-            else:
-                state = 'MN'  # Default to MN for Rochester addresses
-            
-            # Compose full address
-            full_address = f"{row['address']}, {row['city']}, {state}"
-            addresses.append({
-                'full_address': full_address,
-                'address': row['address'],
-                'city': row['city'],
-                'state': state,
-                'latitude': float(row['latitude']),
-                'longitude': float(row['longitude'])
-            })
+    try:
+        with open(path, newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Handle different CSV structures
+                if 'state' in row:
+                    state = row['state']
+                else:
+                    state = 'MN'  # Default to MN for Rochester addresses
+                
+                # Compose full address
+                full_address = f"{row['address']}, {row['city']}, {state}"
+                addresses.append({
+                    'full_address': full_address,
+                    'address': row['address'],
+                    'city': row['city'],
+                    'state': state,
+                    'latitude': float(row['latitude']),
+                    'longitude': float(row['longitude'])
+                })
+    except Exception as e:
+        logger.error(f"Failed to load addresses from CSV {path}: {str(e)}")
+        return []
+    
     return addresses
-
-def register_host_home(address: str, city: str, state: str, latitude: Optional[float]=None, longitude: Optional[float]=None) -> dict:
-    """Register a host home, geocoding if lat/lon not provided. Appends to host_homes.csv."""
-    ensure_host_homes_csv()
-    if latitude is None or longitude is None:
-        # Use your existing mapbox service for geocoding
-        from .mapbox import MapboxService
-        mapbox_service = MapboxService(settings.mapbox_access_token)
-        coords = mapbox_service.geocode_address(f"{address}, {city}, {state}")
-        if not coords:
-            return {"success": False, "message": "Could not geocode address."}
-        latitude, longitude = coords
-    full_address = f"{address}, {city}, {state}"
-    with open(HOST_HOMES_CSV, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['address', 'city', 'state', 'latitude', 'longitude'])
-        writer.writerow({'address': address, 'city': city, 'state': state, 'latitude': latitude, 'longitude': longitude})
-    return {"success": True, "full_address": full_address, "latitude": latitude, "longitude": longitude}
-
-def register_neighbor_home(address: str, city: str, state: str, latitude: Optional[float]=None, longitude: Optional[float]=None) -> dict:
-    """Register a neighbor home, geocoding if lat/lon not provided. Appends to neighbor_homes.csv."""
-    ensure_neighbor_homes_csv()
-    if latitude is None or longitude is None:
-        # Use your existing mapbox service for geocoding
-        from .mapbox import MapboxService
-        mapbox_service = MapboxService(settings.mapbox_access_token)
-        coords = mapbox_service.geocode_address(f"{address}, {city}, {state}")
-        if not coords:
-            return {"success": False, "message": "Could not geocode address."}
-        latitude, longitude = coords
-    full_address = f"{address}, {city}, {state}"
-    with open(NEIGHBOR_HOMES_CSV, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['address', 'city', 'state', 'latitude', 'longitude'])
-        writer.writerow({'address': address, 'city': city, 'state': state, 'latitude': latitude, 'longitude': longitude})
-    return {"success": True, "full_address": full_address, "latitude": latitude, "longitude": longitude}
-
-def discover_neighbors_for_host(host_address: str) -> List[str]:
-    """
-    Find all qualified neighbors for a host home using road-aware detection.
-    Only considers registered host homes as the host.
-    Returns a list of qualified neighbor full addresses (street, city, state).
-    """
-    ensure_host_homes_csv()
-    # Geocode the host address
-    from .mapbox import MapboxService
-    mapbox_service = MapboxService(settings.mapbox_access_token)
-    host_coords = mapbox_service.geocode_address(host_address)
-    if not host_coords:
-        print(f"[ERROR] Could not geocode host address: {host_address}")
-        return []
-    # Load all candidate addresses (from the big CSV)
-    candidates = load_addresses_from_csv(ADDRESS_CSV)
-    # Load the host home full address (from host_homes.csv)
-    host_homes = load_addresses_from_csv(HOST_HOMES_CSV)
-    # Find the host home entry that matches the input address
-    host_home = None
-    for h in host_homes:
-        if host_address.lower() in h['full_address'].lower():
-            host_home = h
-            break
-    if not host_home:
-        print(f"[ERROR] Host home not found in host_homes.csv: {host_address}")
-        return []
-    # Build BallTree for all candidates
-    candidate_coords = np.array([[c['latitude'], c['longitude']] for c in candidates])
-    candidate_coords_rad = np.radians(candidate_coords)
-    tree = BallTree(candidate_coords_rad, metric='haversine')
-    host_latlon_rad = np.radians([[host_home['latitude'], host_home['longitude']]])
-    idxs = tree.query_radius(host_latlon_rad, r=RADIUS_RADIANS)[0]
-    qualified_neighbors = []
-    start = time.time()
-    for idx in idxs:
-        candidate = candidates[idx]
-        if candidate['full_address'].lower() == host_home['full_address'].lower():
-            continue  # skip self
-        # Road-aware check
-        if mapbox_service.is_accessible_without_crossing_road(
-            (host_home['latitude'], host_home['longitude']),
-            (candidate['latitude'], candidate['longitude'])
-        ):
-            qualified_neighbors.append(candidate['full_address'])
-    elapsed = time.time() - start
-    print(f"[DEBUG] Checked {len(idxs)} candidates, found {len(qualified_neighbors)} qualified neighbors. Avg time: {elapsed/max(1,len(idxs)):.2f}s per neighbor.")
-    return qualified_neighbors
-
-def find_qualified_host_for_neighbor(neighbor_address: str) -> List[str]:
-    """
-    For a given neighbor address, find all registered host homes for which this address qualifies as a neighbor.
-    Returns a list of host home full addresses (street, city, state).
-    """
-    ensure_host_homes_csv()
-    # Geocode neighbor address
-    from .mapbox import MapboxService
-    mapbox_service = MapboxService(settings.mapbox_access_token)
-    neighbor_coords = mapbox_service.geocode_address(neighbor_address)
-    if not neighbor_coords:
-        print(f"[ERROR] Could not geocode neighbor address: {neighbor_address}")
-        return []
-    # Load all host homes
-    host_homes = load_addresses_from_csv(HOST_HOMES_CSV)
-    # Build BallTree for all host homes
-    host_coords = np.array([[h['latitude'], h['longitude']] for h in host_homes])
-    host_coords_rad = np.radians(host_coords)
-    tree = BallTree(host_coords_rad, metric='haversine')
-    neighbor_latlon_rad = np.radians([[neighbor_coords[0], neighbor_coords[1]]])
-    idxs = tree.query_radius(neighbor_latlon_rad, r=RADIUS_RADIANS)[0]
-    qualified_hosts = []
-    start = time.time()
-    for idx in idxs:
-        host = host_homes[idx]
-        # Road-aware check
-        if mapbox_service.is_accessible_without_crossing_road(
-            (host['latitude'], host['longitude']),
-            (neighbor_coords[0], neighbor_coords[1])
-        ):
-            qualified_hosts.append(host['full_address'])
-    elapsed = time.time() - start
-    print(f"[DEBUG] Checked {len(idxs)} hosts, found {len(qualified_hosts)} qualified hosts. Avg time: {elapsed/max(1,len(idxs)):.2f}s per host.")
-    return qualified_hosts

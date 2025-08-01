@@ -4,18 +4,21 @@ from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 import json
 import logging
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from geopy.distance import geodesic
 
 from ..base import BaseService
-from .engine import ClusterEngine, register_host_home, register_neighbor_home, discover_neighbors_for_host, find_qualified_host_for_neighbor, ensure_host_homes_csv, ensure_neighbor_homes_csv
+from .engine import ClusterEngine
 from .mapbox import MapboxService
 from ...models.schemas import (
     Cluster, Address, HostRegistration, NeighborJoinRequest,
     ClusterAssignment, ClusterStats, RouteOptimization
 )
+from ...models.database.users import User, UserRole, UserAddress
+from ...models.database.clusters import Cluster as ClusterModel, ClusterStatus
 from ...core.config import settings
 from ...core.database import get_db
 
@@ -40,361 +43,367 @@ class ClusterService(BaseService):
         """Initialize the cluster service."""
         await super().initialize()
         
-        # Ensure CSV files exist
-        self._ensure_csv_files()
-        
-        # Load address data
+        # Load address data for market discovery
         await self.engine.load_address_data()
         
-    async def register_host(self, address: Address, user_id: int) -> Cluster:
-        """Register a new host home and create cluster.
+    async def create_cluster(
+        self,
+        db: Session,
+        user_id: UUID,
+        address_id: UUID
+    ) -> Dict[str, Any]:
+        """Create a new cluster for a host user.
         
         Args:
-            address: Address of the host home
-            user_id: ID of the user registering as host
+            db: Database session
+            user_id: ID of the user creating the cluster
+            address_id: ID of the user's address to use as host
             
         Returns:
-            Created cluster information
+            Dictionary with cluster creation results and market analysis
         """
         try:
-            # Check if address is already registered
-            existing = await self._check_existing_registration(address)
-            if existing:
-                raise Exception("Address is already registered")
-            
-            # Validate address with Mapbox
-            validated = await self.mapbox.validate_address(
-                address.street,
-                address.city,
-                address.state,
-                address.zip_code
+            # Register host and create cluster
+            cluster_result = await self.engine.register_host_home_db(
+                db, user_id, address_id, self.mapbox
             )
             
-            if not validated:
-                raise Exception("Invalid address")
+            if not cluster_result.get('success'):
+                return cluster_result
             
-            # Use function to register host home
-            host_result = register_host_home(
-                address.street,
-                address.city,
-                address.state,
-                validated.get('latitude'),
-                validated.get('longitude')
+            # Analyze complete market
+            market_analysis = await self.engine.analyze_cluster_market_db(
+                db, UUID(cluster_result['cluster_id']), self.mapbox
             )
             
-            if not host_result.get('success'):
-                raise Exception(f"Failed to register host: {host_result.get('message')}")
-            
-            # Create cluster
-            cluster_id = f"cluster_{user_id}_{datetime.now().timestamp()}"
-            cluster = Cluster(
-                cluster_id=cluster_id,
-                name=f"{address.street} Cluster",
-                host_user_id=user_id,
-                host_address=address,
-                members=[user_id],
-                max_capacity=self.max_cluster_capacity,
-                created_at=datetime.now(),
-                is_active=True
-            )
-            
-            # Find potential neighbors
-            neighbors = await self.find_neighbors(cluster_id)
-            cluster.potential_neighbors = len(neighbors)
-            
-            # Store cluster (would go to database in production)
-            await self._store_cluster(cluster)
-            
-            self.logger.info(f"Created cluster {cluster_id} for host at {address.street}")
-            return cluster
+            return {
+                "success": True,
+                "cluster_id": cluster_result['cluster_id'],
+                "cluster_name": cluster_result['cluster_name'],
+                "host_address": cluster_result['address'],
+                "market_analysis": market_analysis
+            }
             
         except Exception as e:
-            self.logger.error(f"Failed to register host: {str(e)}")
-            raise
-            
-    async def find_neighbors(self, cluster_id: str) -> List[Address]:
-        """Find qualified neighbors for a cluster.
+            logger.error(f"Failed to create cluster: {str(e)}")
+            return {"success": False, "message": f"Cluster creation failed: {str(e)}"}
+
+    async def discover_existing_neighbors(
+        self,
+        db: Session,
+        cluster_id: UUID
+    ) -> List[Dict[str, Any]]:
+        """Find existing platform users who could join the cluster.
         
         Args:
+            db: Database session
             cluster_id: ID of the cluster
             
         Returns:
-            List of neighbor addresses
+            List of qualified neighbor addresses with user information
         """
         try:
-            # Get cluster details
-            cluster = await self._get_cluster(cluster_id)
-            if not cluster:
-                return []
-            
-            # Use engine to discover neighbors
-            host_address = f"{cluster.host_address.street}, {cluster.host_address.city}, {cluster.host_address.state}"
-            neighbor_addresses = discover_neighbors_for_host(host_address)
-            
-            # Convert to Address objects
-            neighbors = []
-            for addr_str in neighbor_addresses:
-                # Parse address string (format: "street, city, state")
-                parts = addr_str.split(', ')
-                if len(parts) >= 3:
-                    address = Address(
-                        address_id=f"neighbor_{len(neighbors)}",
-                        street=parts[0],
-                        city=parts[1],
-                        state=parts[2],
-                        zip_code=parts[3] if len(parts) > 3 else "",
-                        latitude=0.0,  # Would be geocoded in production
-                        longitude=0.0
-                    )
-                    neighbors.append(address)
-            
-            self.logger.info(f"Found {len(neighbors)} neighbors for cluster {cluster_id}")
-            return neighbors
-            
+            return await self.engine.discover_existing_neighbors_for_host_db(
+                db, cluster_id, self.mapbox
+            )
         except Exception as e:
-            self.logger.error(f"Failed to find neighbors: {str(e)}")
+            logger.error(f"Failed to discover existing neighbors: {str(e)}")
             return []
+
+    async def discover_addressable_market(
+        self,
+        db: Session,
+        cluster_id: UUID
+    ) -> Dict[str, Any]:
+        """Find total addressable market size using CSV data.
+        
+        Args:
+            db: Database session
+            cluster_id: ID of the cluster
             
-    async def join_cluster(self, cluster_id: str, address: Address, user_id: int) -> ClusterAssignment:
+        Returns:
+            Dictionary with market analysis
+        """
+        try:
+            return await self.engine.discover_addressable_market_for_host_db(
+                db, cluster_id, self.mapbox
+            )
+        except Exception as e:
+            logger.error(f"Failed to discover addressable market: {str(e)}")
+            return {"total_addresses": 0, "qualified_addresses": 0, "potential_addresses": []}
+
+    async def analyze_cluster_market(
+        self,
+        db: Session,
+        cluster_id: UUID
+    ) -> Dict[str, Any]:
+        """Complete market analysis for a cluster.
+        
+        Args:
+            db: Database session
+            cluster_id: ID of the cluster
+            
+        Returns:
+            Dictionary with complete market analysis
+        """
+        try:
+            return await self.engine.analyze_cluster_market_db(
+                db, cluster_id, self.mapbox
+            )
+        except Exception as e:
+            logger.error(f"Failed to analyze cluster market: {str(e)}")
+            return {
+                "cluster_id": str(cluster_id),
+                "existing_platform_users": {"count": 0, "users": []},
+                "addressable_market": {"total_addresses": 0, "qualified_addresses": 0, "potential_addresses": []},
+                "market_insights": {"platform_adoption_rate": 0, "growth_potential": 0, "radius_meters": 80}
+            }
+
+    async def find_qualified_clusters_for_neighbor(
+        self,
+        db: Session,
+        neighbor_address_id: UUID
+    ) -> List[Dict[str, Any]]:
+        """Find qualified clusters for a neighbor address.
+        
+        Args:
+            db: Database session
+            neighbor_address_id: ID of the neighbor's address
+            
+        Returns:
+            List of qualified host clusters
+        """
+        try:
+            return await self.engine.find_qualified_host_for_neighbor_db(
+                db, neighbor_address_id, self.mapbox
+            )
+        except Exception as e:
+            logger.error(f"Failed to find qualified clusters: {str(e)}")
+            return []
+
+    async def join_cluster(
+        self,
+        db: Session,
+        cluster_id: UUID,
+        user_id: UUID,
+        address_id: UUID
+    ) -> Dict[str, Any]:
         """Join a cluster.
         
         Args:
+            db: Database session
             cluster_id: ID of the cluster to join
-            address: Address of the joining user
             user_id: ID of the joining user
+            address_id: ID of the user's address
             
         Returns:
-            Cluster assignment information
+            Dictionary with join results
         """
         try:
-            # Check if cluster exists and has capacity
-            cluster = await self._get_cluster(cluster_id)
+            # Verify user role
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user or user.role not in [UserRole.NEIGHBOR, UserRole.USER]:
+                return {"success": False, "message": "User must be NEIGHBOR or USER role to join clusters"}
+            
+            # Verify address ownership
+            address = db.query(UserAddress).filter(
+                UserAddress.id == address_id,
+                UserAddress.user_id == user_id,
+                UserAddress.verified == True
+            ).first()
+            if not address:
+                return {"success": False, "message": "Address not found, not owned by user, or not verified"}
+            
+            # Get cluster details
+            cluster = db.query(ClusterModel).filter(ClusterModel.id == cluster_id).first()
             if not cluster:
-                raise Exception("Cluster not found")
+                return {"success": False, "message": "Cluster not found"}
             
-            if len(cluster.members) >= cluster.max_capacity:
-                raise Exception("Cluster is at maximum capacity")
+            if cluster.status != ClusterStatus.ACTIVE:
+                return {"success": False, "message": "Cluster is not active"}
             
-            # Use engine to register neighbor home
-            neighbor_result = register_neighbor_home(
-                address.street,
-                address.city,
-                address.state
-            )
+            if not cluster.is_accepting_members:
+                return {"success": False, "message": "Cluster is not accepting new members"}
             
-            if not neighbor_result.get('success'):
-                raise Exception(f"Failed to register neighbor: {neighbor_result.get('message')}")
+            if cluster.current_members >= cluster.max_members:
+                return {"success": False, "message": "Cluster is at maximum capacity"}
             
-            # Find qualified host for this neighbor
-            neighbor_address = f"{address.street}, {address.city}, {address.state}"
-            qualified_hosts = find_qualified_host_for_neighbor(neighbor_address)
+            # Check if user is already a member
+            existing_member = db.query(ClusterModel).join(
+                ClusterModel.members
+            ).filter(
+                ClusterModel.id == cluster_id,
+                ClusterModel.members.any(user_id=user_id)
+            ).first()
             
-            # Check if our target cluster is in the qualified hosts
-            target_cluster_found = False
-            for host_addr in qualified_hosts:
-                if cluster_id in host_addr:  # Simple check - would be more sophisticated in production
-                    target_cluster_found = True
-                    break
+            if existing_member:
+                return {"success": False, "message": "User is already a member of this cluster"}
             
-            if not target_cluster_found:
-                raise Exception("Address is not within range of this cluster")
+            # Verify the address is within range and accessible
+            qualified_clusters = await self.find_qualified_clusters_for_neighbor(db, address_id)
+            cluster_found = any(str(c['cluster_id']) == str(cluster_id) for c in qualified_clusters)
+            
+            if not cluster_found:
+                return {"success": False, "message": "Address is not within range of this cluster"}
             
             # Add user to cluster
-            cluster.members.append(user_id)
-            await self._update_cluster(cluster)
+            from ...models.database.clusters import ClusterMember, MemberStatus
             
-            assignment = ClusterAssignment(
+            # Get the next join order
+            max_join_order = db.query(ClusterMember.join_order).filter(
+                ClusterMember.cluster_id == cluster_id
+            ).order_by(ClusterMember.join_order.desc()).first()
+            
+            next_join_order = (max_join_order[0] if max_join_order else 0) + 1
+            
+            member = ClusterMember(
                 cluster_id=cluster_id,
                 user_id=user_id,
-                assigned_at=datetime.now(),
-                status="active"
+                address_id=address_id,
+                join_order=next_join_order,
+                status=MemberStatus.PENDING
             )
             
-            self.logger.info(f"User {user_id} joined cluster {cluster_id}")
-            return assignment
+            db.add(member)
             
-        except Exception as e:
-            self.logger.error(f"Failed to join cluster: {str(e)}")
-            raise
+            # Update cluster member count
+            cluster.current_members += 1
             
-    async def optimize_routes(self, cluster_id: str) -> RouteOptimization:
-        """Optimize routes for a cluster.
-        
-        Args:
-            cluster_id: ID of the cluster
+            db.commit()
             
-        Returns:
-            Route optimization results
-        """
-        try:
-            # Get cluster and member addresses
-            cluster = await self._get_cluster(cluster_id)
-            if not cluster:
-                raise Exception("Cluster not found")
-            
-            addresses = await self._get_member_addresses(cluster)
-            if not addresses:
-                raise Exception("No addresses found for cluster")
-            
-            # Use engine for route optimization
-            optimal_route = await self._calculate_optimal_route(addresses)
-            
-            # Calculate total distance
-            total_distance = 0
-            for i in range(len(optimal_route) - 1):
-                distance = geodesic(
-                    (optimal_route[i].latitude, optimal_route[i].longitude),
-                    (optimal_route[i + 1].latitude, optimal_route[i + 1].longitude)
-                ).meters
-                total_distance += distance
-            
-            optimization = RouteOptimization(
-                cluster_id=cluster_id,
-                route=optimal_route,
-                total_distance_meters=total_distance,
-                estimated_duration_minutes=total_distance / 100,  # Rough estimate
-                optimized_at=datetime.now()
-            )
-            
-            self.logger.info(f"Optimized route for cluster {cluster_id}: {total_distance:.0f}m")
-            return optimization
-            
-        except Exception as e:
-            self.logger.error(f"Failed to optimize routes: {str(e)}")
-            raise
-            
-    async def get_cluster_stats(self, cluster_id: str) -> ClusterStats:
-        """Get cluster statistics.
-        
-        Args:
-            cluster_id: ID of the cluster
-            
-        Returns:
-            Cluster statistics
-        """
-        try:
-            cluster = await self._get_cluster(cluster_id)
-            if not cluster:
-                raise Exception("Cluster not found")
-            
-            # Get member addresses
-            addresses = await self._get_member_addresses(cluster)
-            
-            # Calculate coverage area
-            coverage_info = await self.calculate_coverage(addresses)
-            
-            stats = ClusterStats(
-                cluster_id=cluster_id,
-                member_count=len(cluster.members),
-                max_capacity=cluster.max_capacity,
-                coverage_area_sqm=coverage_info.get('total_area', 0),
-                average_distance_km=coverage_info.get('average_distance', 0),
-                efficiency_score=coverage_info.get('coverage_efficiency', 0),
-                last_updated=datetime.now()
-            )
-            
-            return stats
-            
-        except Exception as e:
-            self.logger.error(f"Failed to get cluster stats: {str(e)}")
-            raise
-            
-    async def suggest_clusters(self, address: Address) -> List[Cluster]:
-        """Suggest clusters for an address.
-        
-        Args:
-            address: Address to find clusters for
-            
-        Returns:
-            List of suggested clusters
-        """
-        try:
-            # Use engine to find qualified hosts
-            address_str = f"{address.street}, {address.city}, {address.state}"
-            qualified_hosts = find_qualified_host_for_neighbor(address_str)
-            
-            # Convert to cluster suggestions
-            suggestions = []
-            for host_addr in qualified_hosts:
-                # Create a mock cluster for suggestion
-                # In production, this would query actual clusters
-                suggestion = Cluster(
-                    cluster_id=f"suggested_{len(suggestions)}",
-                    name=f"Cluster near {host_addr}",
-                    host_user_id=0,  # Would be actual host ID
-                    host_address=address,
-                    members=[0],  # Would be actual member IDs
-                    max_capacity=self.max_cluster_capacity,
-                    created_at=datetime.now(),
-                    is_active=True
-                )
-                suggestions.append(suggestion)
-            
-            return suggestions
-            
-        except Exception as e:
-            self.logger.error(f"Failed to suggest clusters: {str(e)}")
-            return []
-            
-    async def calculate_coverage(self, addresses: List[Address]) -> Dict[str, Any]:
-        """Calculate coverage area for addresses.
-        
-        Args:
-            addresses: List of addresses to calculate coverage for
-            
-        Returns:
-            Coverage information
-        """
-        try:
-            if not addresses:
-                return {
-                    "total_area": 0,
-                    "average_distance": 0,
-                    "coverage_efficiency": 0,
-                    "unserviceable_addresses": 0
-                }
-            
-            # Calculate total area (simplified - would use actual property boundaries)
-            total_area = len(addresses) * 1000  # 1000 sqm per property estimate
-            
-            # Calculate average distance between addresses
-            total_distance = 0
-            distance_count = 0
-            
-            for i in range(len(addresses)):
-                for j in range(i + 1, len(addresses)):
-                    distance = geodesic(
-                        (addresses[i].latitude, addresses[i].longitude),
-                        (addresses[j].latitude, addresses[j].longitude)
-                    ).kilometers
-                    total_distance += distance
-                    distance_count += 1
-            
-            average_distance = total_distance / distance_count if distance_count > 0 else 0
+            logger.info(f"User {user_id} joined cluster {cluster_id}")
             
             return {
-                "total_area": total_area,
-                "average_distance": average_distance,
-                "coverage_efficiency": 0.8,  # 80% efficiency estimate
-                "unserviceable_addresses": 0  # Addresses too isolated
+                "success": True,
+                "cluster_id": str(cluster_id),
+                "user_id": str(user_id),
+                "member_id": str(member.id),
+                "join_order": member.join_order,
+                "status": member.status.value
             }
             
         except Exception as e:
-            self.logger.error(f"Failed to calculate coverage: {str(e)}")
-            return {
-                "total_area": 0,
-                "average_distance": 0,
-                "coverage_efficiency": 0,
-                "unserviceable_addresses": 0
-            }
+            db.rollback()
+            logger.error(f"Failed to join cluster: {str(e)}")
+            return {"success": False, "message": f"Failed to join cluster: {str(e)}"}
+
+    async def leave_cluster(
+        self,
+        db: Session,
+        cluster_id: UUID,
+        user_id: UUID
+    ) -> Dict[str, Any]:
+        """Leave a cluster.
         
-    # Private helper methods
+        Args:
+            db: Database session
+            cluster_id: ID of the cluster to leave
+            user_id: ID of the user leaving
+            
+        Returns:
+            Dictionary with leave results
+        """
+        try:
+            from ...models.database.clusters import ClusterMember, MemberStatus
+            
+            # Find the member record
+            member = db.query(ClusterMember).filter(
+                ClusterMember.cluster_id == cluster_id,
+                ClusterMember.user_id == user_id,
+                ClusterMember.status.in_([MemberStatus.ACTIVE, MemberStatus.PENDING])
+            ).first()
+            
+            if not member:
+                return {"success": False, "message": "User is not a member of this cluster"}
+            
+            # Check if user is the host
+            cluster = db.query(ClusterModel).filter(ClusterModel.id == cluster_id).first()
+            if cluster and cluster.host_user_id == user_id:
+                return {"success": False, "message": "Host cannot leave their own cluster. Transfer ownership first."}
+            
+            # Update member status
+            member.status = MemberStatus.REMOVED
+            member.left_at = datetime.now()
+            
+            # Update cluster member count
+            cluster.current_members -= 1
+            
+            db.commit()
+            
+            logger.info(f"User {user_id} left cluster {cluster_id}")
+            
+            return {
+                "success": True,
+                "cluster_id": str(cluster_id),
+                "user_id": str(user_id),
+                "left_at": member.left_at.isoformat()
+            }
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to leave cluster: {str(e)}")
+            return {"success": False, "message": f"Failed to leave cluster: {str(e)}"}
+
+    async def get_cluster_details(
+        self,
+        db: Session,
+        cluster_id: UUID
+    ) -> Dict[str, Any]:
+        """Get detailed information about a cluster.
+        
+        Args:
+            db: Database session
+            cluster_id: ID of the cluster
+            
+        Returns:
+            Dictionary with cluster details
+        """
+        try:
+            cluster = db.query(ClusterModel).filter(ClusterModel.id == cluster_id).first()
+            if not cluster:
+                return {"success": False, "message": "Cluster not found"}
+            
+            # Get cluster members
+            members = []
+            for member in cluster.members:
+                if member.status.value in ['active', 'pending']:
+                    members.append({
+                        "user_id": str(member.user_id),
+                        "user_name": member.user.display_name,
+                        "user_email": member.user.email,
+                        "join_order": member.join_order,
+                        "status": member.status.value,
+                        "joined_at": member.joined_at.isoformat()
+                    })
+            
+            return {
+                "success": True,
+                "cluster_id": str(cluster.id),
+                "cluster_name": cluster.name,
+                "host_user_id": str(cluster.host_user_id),
+                "host_name": cluster.host_user.display_name,
+                "host_address": f"{cluster.host_address.address_line1}, {cluster.host_address.city}, {cluster.host_address.state_province}",
+                "status": cluster.status.value,
+                "current_members": cluster.current_members,
+                "max_members": cluster.max_members,
+                "is_accepting_members": cluster.is_accepting_members,
+                "center_latitude": cluster.center_latitude,
+                "center_longitude": cluster.center_longitude,
+                "service_radius_meters": cluster.service_radius_meters,
+                "created_at": cluster.created_at.isoformat(),
+                "members": members
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get cluster details: {str(e)}")
+            return {"success": False, "message": f"Failed to get cluster details: {str(e)}"}
+
+            
+            
     
-    def _ensure_csv_files(self) -> None:
-        """Ensure required CSV files exist."""
-        ensure_host_homes_csv()
-        ensure_neighbor_homes_csv()
         
+    # Private helper methods (kept for backward compatibility)
+    
     async def _check_existing_registration(self, address: Address) -> bool:
         """Check if address is already registered."""
         # Would query database
