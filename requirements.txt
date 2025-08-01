@@ -7,6 +7,19 @@ pydantic-settings>=2.0.0
 # PyMammotion integration
 pymammotion
 
+# Mowthos-Cluster-Logic dependencies
+sqlalchemy>=2.0.23
+requests>=2.31.0
+geopy>=2.4.0
+alembic>=1.13.0
+psycopg2-binary>=2.9.9
+# Road-aware neighbor detection dependencies
+osmnx>=1.2.3
+shapely>=1.8.5.post1
+numpy>=1.26.4
+pandas>=1.5.3
+geopandas>=0.14.4
+
 # Development and testing dependencies
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
@@ -20,8 +33,6 @@ flake8>=6.0.0
 mypy>=1.6.0
 
 # Future dependencies (for later phases)
-# sqlalchemy>=2.0.0
-# psycopg2-binary>=2.9.0
 # redis>=5.0.0
 # stripe>=7.0.0
 # celery>=5.3.0
