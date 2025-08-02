@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.core.config import settings
-from src.api.routes import mower, health
+from src.api.routes import mower, health, auth, payments, clusters, devices
 
 # Configure logging
 logging.basicConfig(level=getattr(logging, settings.log_level))
@@ -37,7 +37,11 @@ def create_app() -> FastAPI:
     
     # Include routers
     app.include_router(health.router, prefix="/health", tags=["health"])
+    app.include_router(auth.router)  # Already has prefix="/auth" in the router
     app.include_router(mower.router, prefix="/api/v1/mowers", tags=["mowers"])
+    app.include_router(payments.router)  # Already has prefix="/api/v1/payments" in the router
+    app.include_router(clusters.router)  # Already has prefix="/api/v1/clusters" in the router
+    app.include_router(devices.router)  # Already has prefix="/api/v1/devices" in the router
     
     @app.on_event("startup")
     async def startup_event():
