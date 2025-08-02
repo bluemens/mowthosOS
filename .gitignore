@@ -431,6 +431,7 @@ build/
 .pytest_cache/
 test_*.py
 *_test.py
+!test_api_routes.py
 
 # Documentation
 docs/_build/
