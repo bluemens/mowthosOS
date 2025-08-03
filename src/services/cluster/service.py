@@ -6,7 +6,7 @@ import json
 import logging
 from uuid import UUID
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_
 from geopy.distance import geodesic
 
@@ -31,7 +31,7 @@ class ClusterService(BaseService):
         """Initialize the cluster service."""
         super().__init__("cluster")
         self.engine = ClusterEngine()
-        self.mapbox = MapboxService(settings.mapbox_access_token)
+        self.mapbox = MapboxService(settings.MAPBOX_ACCESS_TOKEN)
         
         # Configuration
         self.max_cluster_capacity = 5
@@ -48,7 +48,7 @@ class ClusterService(BaseService):
         
     async def create_cluster(
         self,
-        db: Session,
+        db: AsyncSession,
         user_id: UUID,
         address_id: UUID
     ) -> Dict[str, Any]:
@@ -90,7 +90,7 @@ class ClusterService(BaseService):
 
     async def discover_existing_neighbors(
         self,
-        db: Session,
+        db: AsyncSession,
         cluster_id: UUID
     ) -> List[Dict[str, Any]]:
         """Find existing platform users who could join the cluster.
@@ -112,7 +112,7 @@ class ClusterService(BaseService):
 
     async def discover_addressable_market(
         self,
-        db: Session,
+        db: AsyncSession,
         cluster_id: UUID
     ) -> Dict[str, Any]:
         """Find total addressable market size using CSV data.
@@ -134,7 +134,7 @@ class ClusterService(BaseService):
 
     async def analyze_cluster_market(
         self,
-        db: Session,
+        db: AsyncSession,
         cluster_id: UUID
     ) -> Dict[str, Any]:
         """Complete market analysis for a cluster.
@@ -161,7 +161,7 @@ class ClusterService(BaseService):
 
     async def find_qualified_clusters_for_neighbor(
         self,
-        db: Session,
+        db: AsyncSession,
         neighbor_address_id: UUID
     ) -> List[Dict[str, Any]]:
         """Find qualified clusters for a neighbor address.
@@ -183,7 +183,7 @@ class ClusterService(BaseService):
 
     async def join_cluster(
         self,
-        db: Session,
+        db: AsyncSession,
         cluster_id: UUID,
         user_id: UUID,
         address_id: UUID
@@ -289,7 +289,7 @@ class ClusterService(BaseService):
 
     async def leave_cluster(
         self,
-        db: Session,
+        db: AsyncSession,
         cluster_id: UUID,
         user_id: UUID
     ) -> Dict[str, Any]:
@@ -346,7 +346,7 @@ class ClusterService(BaseService):
 
     async def get_cluster_details(
         self,
-        db: Session,
+        db: AsyncSession,
         cluster_id: UUID
     ) -> Dict[str, Any]:
         """Get detailed information about a cluster.

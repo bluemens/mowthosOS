@@ -7,7 +7,7 @@ import stripe
 
 from src.core.auth import get_current_active_user
 from src.models.database.users import User
-from src.models.database.billing import ClusterSubscriptionPlan, Subscription
+from src.models.database.billing import ClusterSubscriptionPlan, Subscription, PaymentMethod
 from src.models.database.clusters import ClusterMember, Cluster, ClusterStatus
 from src.models.database.marketplace import Product
 from src.services.payment.stripe_service import StripeService
@@ -83,9 +83,12 @@ async def get_subscription_plans(
     db: AsyncSession = Depends(get_db)
 ):
     """Get available subscription plans"""
-    plans = await db.query(ClusterSubscriptionPlan).filter(
+    from sqlalchemy import select
+    stmt = select(ClusterSubscriptionPlan).where(
         ClusterSubscriptionPlan.is_active == True
-    ).order_by(ClusterSubscriptionPlan.display_order).all()
+    ).order_by(ClusterSubscriptionPlan.display_order)
+    result = await db.execute(stmt)
+    plans = result.scalars().all()
     
     return [SubscriptionPlanResponse(
         id=str(plan.id),
@@ -379,9 +382,12 @@ async def list_payment_methods(
     db: AsyncSession = Depends(get_db)
 ):
     """List user's payment methods"""
-    methods = await db.query(PaymentMethod).filter(
+    from sqlalchemy import select
+    stmt = select(PaymentMethod).where(
         PaymentMethod.user_id == current_user.id
-    ).all()
+    )
+    result = await db.execute(stmt)
+    methods = result.scalars().all()
     
     return [{
         "id": str(method.id),

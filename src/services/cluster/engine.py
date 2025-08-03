@@ -9,7 +9,7 @@ import time
 from uuid import UUID
 from datetime import datetime
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import and_, text
 from sklearn.neighbors import BallTree
 from geopy.distance import geodesic
@@ -37,7 +37,7 @@ class ClusterEngine:
         """Initialize the cluster engine."""
         self.all_addresses: List[Dict[str, Any]] = []
         self.ball_tree: Optional[BallTree] = None
-        self.mapbox_service = MapboxService(settings.mapbox_access_token)
+        self.mapbox_service = MapboxService(settings.MAPBOX_ACCESS_TOKEN)
         
     async def load_address_data(self) -> None:
         """Load address data from CSV files for addressable market discovery."""
@@ -59,7 +59,7 @@ class ClusterEngine:
 
     async def register_host_home_db(
         self,
-        db: Session,
+        db: AsyncSession,
         user_id: UUID,
         address_id: UUID,
         mapbox_service: MapboxService
@@ -77,24 +77,31 @@ class ClusterEngine:
             Dictionary with registration results
         """
         try:
+            from sqlalchemy import select
             # 1. Verify user role
-            user = db.query(User).filter(User.id == user_id).first()
+            stmt = select(User).where(User.id == user_id)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
             if not user or user.role != UserRole.HOST:
                 return {"success": False, "message": "User must be HOST role to register as host"}
             
             # 2. Verify address ownership
-            address = db.query(UserAddress).filter(
+            stmt = select(UserAddress).where(
                 UserAddress.id == address_id,
                 UserAddress.user_id == user_id
-            ).first()
+            )
+            result = await db.execute(stmt)
+            address = result.scalar_one_or_none()
             if not address:
                 return {"success": False, "message": "Address not found or not owned by user"}
             
             # 3. Check if user already hosts a cluster
-            existing_cluster = db.query(Cluster).filter(
+            stmt = select(Cluster).where(
                 Cluster.host_user_id == user_id,
                 Cluster.status.in_([ClusterStatus.ACTIVE, ClusterStatus.PENDING])
-            ).first()
+            )
+            result = await db.execute(stmt)
+            existing_cluster = result.scalar_one_or_none()
             if existing_cluster:
                 return {"success": False, "message": "User already hosts a cluster"}
             
@@ -122,7 +129,7 @@ class ClusterEngine:
                 current_members=0
             )
             db.add(cluster)
-            db.commit()
+            await db.commit()
             
             logger.info(f"Created cluster {cluster.id} for host {user_id} at {address_str}")
             
@@ -136,13 +143,13 @@ class ClusterEngine:
             }
             
         except Exception as e:
-            db.rollback()
+            await db.rollback()
             logger.error(f"Failed to register host: {str(e)}")
             return {"success": False, "message": f"Registration failed: {str(e)}"}
 
     async def discover_existing_neighbors_for_host_db(
         self,
-        db: Session,
+        db: AsyncSession,
         cluster_id: UUID,
         mapbox_service: MapboxService,
         radius_meters: int = 80
@@ -234,7 +241,7 @@ class ClusterEngine:
 
     async def discover_addressable_market_for_host_db(
         self,
-        db: Session,
+        db: AsyncSession,
         cluster_id: UUID,
         mapbox_service: MapboxService,
         radius_meters: int = 80
@@ -321,7 +328,7 @@ class ClusterEngine:
 
     async def analyze_cluster_market_db(
         self,
-        db: Session,
+        db: AsyncSession,
         cluster_id: UUID,
         mapbox_service: MapboxService,
         radius_meters: int = 80
@@ -384,7 +391,7 @@ class ClusterEngine:
 
     async def find_qualified_host_for_neighbor_db(
         self,
-        db: Session,
+        db: AsyncSession,
         neighbor_address_id: UUID,
         mapbox_service: MapboxService,
         radius_meters: int = 80

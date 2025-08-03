@@ -12,7 +12,7 @@ from src.core.auth import get_current_active_user
 from src.models.database.users import User, UserRole
 from src.models.database.clusters import ClusterStatus
 from src.core.database import get_db
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
 
@@ -103,7 +103,7 @@ async def get_current_neighbor_user(current_user: User = Depends(get_current_act
 @router.post("/create", response_model=CreateClusterResponse)
 async def create_cluster(
     request: CreateClusterRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     cluster_service = Depends(get_cluster_service),
     current_user: User = Depends(get_current_host_user)
 ):
@@ -139,7 +139,7 @@ async def create_cluster(
 async def join_cluster(
     cluster_id: UUID,
     request: JoinClusterRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     cluster_service = Depends(get_cluster_service),
     current_user: User = Depends(get_current_neighbor_user)
 ):
@@ -176,7 +176,7 @@ async def join_cluster(
 @router.post("/{cluster_id}/leave", response_model=LeaveClusterResponse)
 async def leave_cluster(
     cluster_id: UUID,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     cluster_service = Depends(get_cluster_service),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -210,7 +210,7 @@ async def leave_cluster(
 @router.get("/{cluster_id}", response_model=ClusterDetailsResponse)
 async def get_cluster_details(
     cluster_id: UUID,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     cluster_service = Depends(get_cluster_service),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -254,7 +254,7 @@ async def get_cluster_details(
 @router.get("/{cluster_id}/market-analysis", response_model=MarketAnalysisResponse)
 async def get_cluster_market_analysis(
     cluster_id: UUID,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     cluster_service = Depends(get_cluster_service),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -282,7 +282,7 @@ async def get_cluster_market_analysis(
 @router.get("/{cluster_id}/existing-neighbors")
 async def get_existing_neighbors(
     cluster_id: UUID,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     cluster_service = Depends(get_cluster_service),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -309,7 +309,7 @@ async def get_existing_neighbors(
 @router.get("/{cluster_id}/addressable-market")
 async def get_addressable_market(
     cluster_id: UUID,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     cluster_service = Depends(get_cluster_service),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -335,7 +335,7 @@ async def get_addressable_market(
 @router.get("/neighbor/{address_id}/qualified-clusters")
 async def get_qualified_clusters_for_neighbor(
     address_id: UUID,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     cluster_service = Depends(get_cluster_service),
     current_user: User = Depends(get_current_active_user)
 ):
