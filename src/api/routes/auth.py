@@ -1,6 +1,7 @@
 """
 Authentication API endpoints
 """
+import logging
 from typing import Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -9,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, EmailStr, Field, validator
 
 from src.core.database import get_db
+
+logger = logging.getLogger(__name__)
 from src.core.auth import (
     create_access_token,
     create_refresh_token,
@@ -22,7 +25,7 @@ from src.models.database import User, UserRole, UserAddress
 from src.core.config import settings
 
 
-router = APIRouter(prefix="/auth", tags=["authentication"])
+router = APIRouter(tags=["authentication"])
 
 
 # Request/Response Models
@@ -75,6 +78,10 @@ class UserResponse(BaseModel):
     
     class Config:
         from_attributes = True
+    
+    @validator('id', pre=True)
+    def convert_uuid_to_string(cls, v):
+        return str(v) if v else v
 
 
 class UserUpdateRequest(BaseModel):
@@ -167,6 +174,12 @@ class MessageResponse(BaseModel):
     message: str
 
 
+class ChangePasswordRequest(BaseModel):
+    """Request to change password"""
+    old_password: str = Field(..., description="Current password")
+    new_password: str = Field(..., min_length=settings.PASSWORD_MIN_LENGTH)
+
+
 # Utility functions
 def get_client_info(request: Request) -> dict:
     """Extract client information from request"""
@@ -215,9 +228,12 @@ async def register(
             detail=str(e)
         )
     except Exception as e:
+        import traceback
+        logger.error(f"Registration failed: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to register user"
+            detail=f"Failed to register user: {str(e)}"
         )
 
 
@@ -438,8 +454,7 @@ async def update_user_email(
 
 @router.post("/change-password", response_model=MessageResponse)
 async def change_password(
-    old_password: str = Field(..., description="Current password"),
-    new_password: str = Field(..., min_length=settings.PASSWORD_MIN_LENGTH),
+    password_data: ChangePasswordRequest,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -449,8 +464,8 @@ async def change_password(
     try:
         await user_service.update_password(
             user_id=current_user.id,
-            old_password=old_password,
-            new_password=new_password
+            old_password=password_data.old_password,
+            new_password=password_data.new_password
         )
         
         # Revoke all tokens after password change

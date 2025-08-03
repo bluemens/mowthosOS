@@ -4,11 +4,12 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import logging
 from decimal import Decimal
+from uuid import UUID
 
 from src.core.config import get_settings
 from src.core.database import get_db
 from src.models.database.billing import (
-    Subscription, SubscriptionStatus, SubscriptionType,
+    Subscription, SubscriptionStatus, SubscriptionType, SubscriptionTier,
     PaymentMethod, Payment, PaymentStatus,
     Invoice, InvoiceStatus, InvoiceLineItem,
     ClusterSubscriptionPlan
@@ -27,8 +28,9 @@ class StripeService(BaseService):
     def __init__(self):
         super().__init__()
         settings = get_settings()
-        stripe.api_key = settings.STRIPE_SECRET_KEY
-        self.webhook_secret = settings.STRIPE_WEBHOOK_SECRET
+        # Convert SecretStr to string for Stripe
+        stripe.api_key = settings.STRIPE_SECRET_KEY.get_secret_value() if settings.STRIPE_SECRET_KEY else None
+        self.webhook_secret = settings.STRIPE_WEBHOOK_SECRET.get_secret_value() if settings.STRIPE_WEBHOOK_SECRET else None
         
     # ==================== Customer Management ====================
     
@@ -215,6 +217,65 @@ class StripeService(BaseService):
             
         return subscription
     
+    async def update_subscription_plan(
+        self,
+        subscription: Subscription,
+        new_plan: ClusterSubscriptionPlan,
+        effective_date: Optional[str] = None
+    ) -> Subscription:
+        """Update subscription plan (upgrade/downgrade)"""
+        if not subscription.stripe_subscription_id:
+            raise ValueError("Subscription has no Stripe ID")
+        
+        # Parse effective date
+        if effective_date:
+            try:
+                effective_datetime = datetime.fromisoformat(effective_date.replace('Z', '+00:00'))
+            except ValueError:
+                raise ValueError("Invalid effective_date format. Use ISO format.")
+        else:
+            # Default to next billing cycle
+            effective_datetime = subscription.current_period_end
+        
+        # Update Stripe subscription
+        stripe_subscription = stripe.Subscription.modify(
+            subscription.stripe_subscription_id,
+            items=[{
+                "id": subscription.stripe_price_id,  # Current price item
+                "price": new_plan.stripe_monthly_price_id,  # New price
+            }],
+            proration_behavior="create_prorations",  # Prorate the change
+            metadata={
+                "plan_change": "true",
+                "old_plan_id": str(subscription.cluster_plan_id),
+                "new_plan_id": str(new_plan.id),
+                "effective_date": effective_datetime.isoformat()
+            }
+        )
+        
+        # Update database subscription
+        async with self.get_db() as db:
+            subscription.cluster_plan_id = new_plan.id
+            subscription.stripe_price_id = new_plan.stripe_monthly_price_id
+            subscription.monthly_price = Decimal(str(new_plan.monthly_price))
+            subscription.features = {
+                "mowing_frequency": new_plan.mowing_frequency,
+                "max_lawn_size_sqm": new_plan.max_lawn_size_sqm,
+                "included_services": new_plan.included_services,
+                "priority_scheduling": new_plan.priority_scheduling
+            }
+            subscription.current_period_start = datetime.fromtimestamp(
+                stripe_subscription.current_period_start
+            )
+            subscription.current_period_end = datetime.fromtimestamp(
+                stripe_subscription.current_period_end
+            )
+            
+            await db.commit()
+            await db.refresh(subscription)
+        
+        return subscription
+    
     # ==================== Marketplace Payments ====================
     
     async def create_checkout_session(
@@ -320,6 +381,85 @@ class StripeService(BaseService):
             
         return order
     
+    async def create_pre_join_subscription(
+        self,
+        user: User,
+        cluster_id: UUID,
+        plan: ClusterSubscriptionPlan,
+        payment_method_id: str,
+        address_id: UUID,
+        trial_days: int = 30
+    ) -> Dict[str, Any]:
+        """Create subscription for cluster membership with trial period"""
+        # Ensure customer exists in Stripe
+        customer_id = await self.create_or_update_customer(user)
+        
+        # Attach payment method
+        await self.attach_payment_method(
+            user=user,
+            payment_method_id=payment_method_id,
+            set_as_default=True
+        )
+        
+        # Create subscription in Stripe with trial (no immediate charge)
+        stripe_subscription = stripe.Subscription.create(
+            customer=customer_id,
+            items=[{
+                "price": plan.stripe_monthly_price_id,
+            }],
+            trial_period_days=trial_days,
+            payment_behavior="default_incomplete",  # Don't charge immediately
+            payment_settings={
+                "save_default_payment_method": "on_subscription",
+                "payment_method_types": ["card"]
+            },
+            metadata={
+                "user_id": str(user.id),
+                "cluster_id": str(cluster_id),
+                "plan_id": str(plan.id),
+                "address_id": str(address_id),
+                "subscription_type": "cluster_member_trial"
+            }
+        )
+        
+        # Create subscription record in database
+        async with self.get_db() as db:
+            subscription = Subscription(
+                user_id=user.id,
+                subscription_type=SubscriptionType.CLUSTER_MEMBER,
+                cluster_id=cluster_id,
+                cluster_plan_id=plan.id,
+                tier=SubscriptionTier.BASIC,  # Map from plan
+                status=SubscriptionStatus.TRIALING,
+                stripe_customer_id=customer_id,
+                stripe_subscription_id=stripe_subscription.id,
+                stripe_price_id=plan.stripe_monthly_price_id,
+                monthly_price=Decimal(str(plan.monthly_price)),
+                currency=plan.currency,
+                current_period_start=datetime.fromtimestamp(stripe_subscription.current_period_start),
+                current_period_end=datetime.fromtimestamp(stripe_subscription.current_period_end),
+                trial_start=datetime.now(),
+                trial_end=datetime.now() + timedelta(days=trial_days),
+                features={
+                    "mowing_frequency": plan.mowing_frequency,
+                    "max_lawn_size_sqm": plan.max_lawn_size_sqm,
+                    "included_services": plan.included_services,
+                    "priority_scheduling": plan.priority_scheduling
+                }
+            )
+            db.add(subscription)
+            await db.commit()
+            await db.refresh(subscription)
+            
+        return {
+            "subscription_id": str(subscription.id),
+            "stripe_subscription_id": stripe_subscription.id,
+            "status": subscription.status,
+            "trial_start": subscription.trial_start.isoformat(),
+            "trial_end": subscription.trial_end.isoformat(),
+            "customer_id": customer_id
+        }
+    
     # ==================== Webhook Handling ====================
     
     async def handle_webhook(self, payload: bytes, sig_header: str) -> Dict[str, Any]:
@@ -376,6 +516,32 @@ class StripeService(BaseService):
                 subscription.current_period_end = datetime.fromtimestamp(
                     stripe_subscription.current_period_end
                 )
+                
+                # Handle cluster member status changes
+                if subscription.subscription_type == SubscriptionType.CLUSTER_MEMBER:
+                    await self._update_cluster_member_status(subscription, stripe_subscription.status)
+                
+                await db.commit()
+    
+    async def _update_cluster_member_status(self, subscription: Subscription, stripe_status: str):
+        """Update cluster member status based on subscription status"""
+        from src.models.database.clusters import ClusterMember, MemberStatus
+        
+        async with self.get_db() as db:
+            # Find cluster member for this subscription
+            member = await db.query(ClusterMember).filter(
+                ClusterMember.cluster_id == subscription.cluster_id,
+                ClusterMember.user_id == subscription.user_id
+            ).first()
+            
+            if member:
+                if stripe_status == "active":
+                    member.status = MemberStatus.ACTIVE
+                elif stripe_status in ["past_due", "unpaid"]:
+                    member.status = MemberStatus.SUSPENDED
+                elif stripe_status == "canceled":
+                    member.status = MemberStatus.REMOVED
+                    member.left_at = datetime.now()
                 
                 await db.commit()
     

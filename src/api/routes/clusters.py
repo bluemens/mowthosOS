@@ -7,7 +7,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from src.api.dependencies import get_cluster_service, get_current_active_user
+from src.api.dependencies import get_cluster_service
+from src.core.auth import get_current_active_user
 from src.models.database.users import User, UserRole
 from src.models.database.clusters import ClusterStatus
 from src.core.database import get_db

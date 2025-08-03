@@ -9,10 +9,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.core.config import settings
-from src.api.routes import mower, health, auth, devices, clusters
+from src.api.routes import mower, health, auth, devices, clusters, payments
     
 # Configure logging
-logging.basicConfig(level=getattr(logging, settings.log_level))
+logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
 logger = logging.getLogger(__name__)
 
 def create_app() -> FastAPI:
@@ -22,14 +22,14 @@ def create_app() -> FastAPI:
         title="MowthosOS API",
         description="Professional robotic mower management system",
         version="1.0.0",
-        docs_url="/docs" if settings.debug else None,
-        redoc_url="/redoc" if settings.debug else None,
+        docs_url="/docs" if settings.DEBUG else None,
+        redoc_url="/redoc" if settings.DEBUG else None,
     )
     
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.allowed_origins,
+        allow_origins=settings.BACKEND_CORS_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(devices.router, prefix="/api/v1", tags=["devices"])
     app.include_router(mower.router, prefix="/api/v1/mowers", tags=["mowers"])
     app.include_router(clusters.router, prefix="/api/v1", tags=["clusters"])
+    app.include_router(payments.router, tags=["payments"])
     
     @app.on_event("startup")
     async def startup_event():

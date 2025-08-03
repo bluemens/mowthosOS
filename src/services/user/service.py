@@ -7,7 +7,7 @@ from sqlalchemy import select, update, and_, or_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.auth import hash_password, verify_password
+from src.core.password import hash_password, verify_password
 from src.models.database import (
     User, UserAddress, UserSession, RefreshToken, 
     APIKey, AuditLog, UserRole

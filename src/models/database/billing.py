@@ -8,7 +8,7 @@ from decimal import Decimal
 from sqlalchemy import (
     Column, String, Boolean, DateTime, ForeignKey, 
     DECIMAL, Integer, JSON, Text, UniqueConstraint, Index,
-    Enum as SQLEnum
+    Enum as SQLEnum, text
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -206,9 +206,8 @@ class PaymentMethod(Base):
     
     # Constraints
     __table_args__ = (
-        UniqueConstraint("user_id", "is_default", name="uq_one_default_per_user", 
-                        postgresql_where=(is_default == True)),
         Index("idx_payment_method_user", "user_id"),
+        Index("idx_payment_method_default", "user_id", "is_default"),
     )
 
 
@@ -288,7 +287,7 @@ class InvoiceLineItem(Base):
     period_end = Column(DateTime(timezone=True), nullable=True)
     
     # Metadata
-    metadata = Column(JSON, nullable=True)
+    item_metadata = Column(JSON, nullable=True)
     
     # Relationships
     invoice = relationship("Invoice", back_populates="line_items")
@@ -325,7 +324,7 @@ class Payment(Base):
     
     # Metadata
     description = Column(String(500), nullable=True)
-    metadata = Column(JSON, nullable=True)
+    payment_metadata = Column(JSON, nullable=True)
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -370,7 +369,7 @@ class UsageRecord(Base):
     billing_period_end = Column(DateTime(timezone=True), nullable=True)
     
     # Metadata
-    metadata = Column(JSON, nullable=True)
+    usage_metadata = Column(JSON, nullable=True)
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

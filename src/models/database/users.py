@@ -87,6 +87,7 @@ class User(Base):
     hosted_clusters = relationship("Cluster", back_populates="host_user")
     cluster_memberships = relationship("ClusterMember", back_populates="user")
     subscriptions = relationship("Subscription", back_populates="user")
+    orders = relationship("Order", back_populates="user")
     api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
     audit_logs = relationship("AuditLog", back_populates="user")
     
@@ -271,7 +272,7 @@ class AuditLog(Base):
     session_id = Column(UUID(as_uuid=True), nullable=True)
     
     # Additional data
-    metadata = Column(JSON, nullable=True)
+    event_metadata = Column(JSON, nullable=True)
     
     # Timestamp
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

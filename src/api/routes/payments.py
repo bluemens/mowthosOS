@@ -7,12 +7,13 @@ import stripe
 
 from src.core.auth import get_current_active_user
 from src.models.database.users import User
-from src.models.database.billing import ClusterSubscriptionPlan
-from src.models.database.clusters import ClusterMember
+from src.models.database.billing import ClusterSubscriptionPlan, Subscription
+from src.models.database.clusters import ClusterMember, Cluster, ClusterStatus
 from src.models.database.marketplace import Product
 from src.services.payment.stripe_service import StripeService
 from src.core.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func
 
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
 
@@ -42,6 +43,14 @@ class CreateSubscriptionRequest(BaseModel):
     payment_method_id: str
 
 
+class CreatePreJoinSubscriptionRequest(BaseModel):
+    """Request to create subscription before joining cluster"""
+    cluster_id: str
+    plan_id: str
+    payment_method_id: str
+    address_id: str
+
+
 class CreateCheckoutRequest(BaseModel):
     """Request to create marketplace checkout"""
     items: List[dict] = Field(..., description="List of {product_id, quantity}")
@@ -53,6 +62,12 @@ class PaymentMethodRequest(BaseModel):
     """Request to attach payment method"""
     payment_method_id: str
     set_as_default: bool = True
+
+
+class UpdateSubscriptionPlanRequest(BaseModel):
+    """Request to update subscription plan"""
+    new_plan_id: str
+    effective_date: Optional[str] = None  # ISO date string, defaults to next billing cycle
 
 
 class WebhookResponse(BaseModel):
@@ -90,13 +105,90 @@ async def get_subscription_plans(
 
 # ==================== Subscription Management ====================
 
+@router.post("/subscriptions/pre-join")
+async def create_pre_join_subscription(
+    request: CreatePreJoinSubscriptionRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a subscription before joining a cluster (with trial)"""
+    stripe_service = StripeService()
+    
+    # Verify cluster exists and is accepting members
+    cluster = await db.query(Cluster).filter(
+        Cluster.id == request.cluster_id,
+        Cluster.status == ClusterStatus.ACTIVE,
+        Cluster.is_accepting_members == True
+    ).first()
+    
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found or not accepting members")
+    
+    # Verify user is not already a member
+    existing_member = await db.query(ClusterMember).filter(
+        ClusterMember.cluster_id == request.cluster_id,
+        ClusterMember.user_id == current_user.id
+    ).first()
+    
+    if existing_member:
+        raise HTTPException(status_code=400, detail="Already a member of this cluster")
+    
+    # Get the plan
+    plan = await db.query(ClusterSubscriptionPlan).filter(
+        ClusterSubscriptionPlan.id == request.plan_id,
+        ClusterSubscriptionPlan.is_active == True
+    ).first()
+    
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    
+    # Create subscription with trial (no immediate charge)
+    subscription_result = await stripe_service.create_pre_join_subscription(
+        user=current_user,
+        cluster_id=request.cluster_id,
+        plan=plan,
+        payment_method_id=request.payment_method_id,
+        address_id=request.address_id,
+        trial_days=30
+    )
+    
+    # Add user to cluster as PENDING member
+    from src.models.database.clusters import ClusterMember, MemberStatus
+    
+    # Get next join order
+    max_order = await db.query(func.max(ClusterMember.join_order)).filter(
+        ClusterMember.cluster_id == request.cluster_id
+    ).scalar() or 0
+    
+    member = ClusterMember(
+        cluster_id=request.cluster_id,
+        user_id=current_user.id,
+        address_id=request.address_id,
+        join_order=max_order + 1,
+        status=MemberStatus.PENDING  # Will be activated after trial
+    )
+    
+    db.add(member)
+    await db.commit()
+    await db.refresh(member)
+    
+    return {
+        "subscription_id": subscription_result["subscription_id"],
+        "member_id": str(member.id),
+        "status": "pending",
+        "trial_start": subscription_result["trial_start"],
+        "trial_end": subscription_result["trial_end"],
+        "message": "Subscription created with 30-day free trial. You will be charged after the trial period."
+    }
+
+
 @router.post("/subscriptions/cluster")
 async def create_cluster_subscription(
     request: CreateSubscriptionRequest,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a subscription for cluster membership"""
+    """Create a subscription for cluster membership (legacy endpoint)"""
     stripe_service = StripeService()
     
     # Verify user is member of the cluster
@@ -168,6 +260,50 @@ async def cancel_subscription(
         "status": "cancelled",
         "cancel_at_period_end": subscription.cancel_at_period_end,
         "current_period_end": subscription.current_period_end.isoformat()
+    }
+
+
+@router.post("/subscriptions/{subscription_id}/update-plan")
+async def update_subscription_plan(
+    subscription_id: str,
+    request: UpdateSubscriptionPlanRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update subscription plan (upgrade/downgrade)"""
+    stripe_service = StripeService()
+    
+    # Get user's subscription
+    subscription = await db.query(Subscription).filter(
+        Subscription.id == subscription_id,
+        Subscription.user_id == current_user.id
+    ).first()
+    
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    
+    # Get the new plan
+    new_plan = await db.query(ClusterSubscriptionPlan).filter(
+        ClusterSubscriptionPlan.id == request.new_plan_id,
+        ClusterSubscriptionPlan.is_active == True
+    ).first()
+    
+    if not new_plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    
+    # Update subscription plan
+    updated_subscription = await stripe_service.update_subscription_plan(
+        subscription=subscription,
+        new_plan=new_plan,
+        effective_date=request.effective_date
+    )
+    
+    return {
+        "subscription_id": str(updated_subscription.id),
+        "new_plan_id": str(new_plan.id),
+        "new_plan_name": new_plan.name,
+        "effective_date": updated_subscription.current_period_end.isoformat(),
+        "message": "Plan updated successfully"
     }
 
 
@@ -256,6 +392,64 @@ async def list_payment_methods(
         "exp_year": method.exp_year,
         "is_default": method.is_default
     } for method in methods]
+
+
+@router.get("/subscriptions/{subscription_id}")
+async def get_subscription_details(
+    subscription_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get subscription details including trial status"""
+    subscription = await db.query(Subscription).filter(
+        Subscription.id == subscription_id,
+        Subscription.user_id == current_user.id
+    ).first()
+    
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    
+    # Get plan details
+    plan = None
+    if subscription.cluster_plan_id:
+        plan = await db.query(ClusterSubscriptionPlan).filter(
+            ClusterSubscriptionPlan.id == subscription.cluster_plan_id
+        ).first()
+    
+    # Get cluster member status
+    member = None
+    if subscription.cluster_id:
+        member = await db.query(ClusterMember).filter(
+            ClusterMember.cluster_id == subscription.cluster_id,
+            ClusterMember.user_id == current_user.id
+        ).first()
+    
+    return {
+        "subscription_id": str(subscription.id),
+        "status": subscription.status,
+        "trial_start": subscription.trial_start.isoformat() if subscription.trial_start else None,
+        "trial_end": subscription.trial_end.isoformat() if subscription.trial_end else None,
+        "current_period_start": subscription.current_period_start.isoformat() if subscription.current_period_start else None,
+        "current_period_end": subscription.current_period_end.isoformat() if subscription.current_period_end else None,
+        "monthly_price": float(subscription.monthly_price) if subscription.monthly_price else None,
+        "currency": subscription.currency,
+        "plan": {
+            "id": str(plan.id),
+            "name": plan.name,
+            "mowing_frequency": plan.mowing_frequency,
+            "included_services": plan.included_services
+        } if plan else None,
+        "cluster_member": {
+            "member_id": str(member.id),
+            "status": member.status,
+            "join_order": member.join_order
+        } if member else None,
+        "is_trial_active": (
+            subscription.trial_end and 
+            subscription.trial_end > datetime.now() and 
+            subscription.status == SubscriptionStatus.TRIALING
+        )
+    }
 
 
 # ==================== Webhooks ====================

@@ -2,6 +2,9 @@ import os
 from typing import Optional, List
 from datetime import timedelta
 from functools import lru_cache
+from dotenv import load_dotenv, find_dotenv
+
+load_dotenv(find_dotenv(), override=False)
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, SecretStr, PostgresDsn, validator
@@ -14,26 +17,34 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
+
+    
     
     # Application
     APP_NAME: str = "MowthosOS"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = Field(default=False)
-    ENVIRONMENT: str = Field(default="development", regex="^(development|staging|production)$")
+    ENVIRONMENT: str = Field(default="development", pattern="^(development|staging|production)$")
     IS_SERVERLESS: bool = Field(default=False)
     
     # API Settings
     API_V1_STR: str = "/api/v1"
     BACKEND_CORS_ORIGINS: List[str] = Field(default=["http://localhost:3000"])
     
+    # Server Settings
+    HOST: str = Field(default="0.0.0.0")
+    PORT: int = Field(default=8000)
+    RELOAD: bool = Field(default=True)
+    
     # Database
-    POSTGRES_USER: str = Field(default="mowthos")
-    POSTGRES_PASSWORD: SecretStr = Field(default=SecretStr("mowthos_secure_password"))
-    POSTGRES_SERVER: str = Field(default="localhost")
-    POSTGRES_PORT: int = Field(default=5432)
-    POSTGRES_DB: str = Field(default="mowthos_db")
-    DATABASE_URL: Optional[PostgresDsn] = None
+    POSTGRES_USER: str = Field()
+    POSTGRES_PASSWORD: SecretStr = Field()
+    POSTGRES_SERVER: str = Field()
+    POSTGRES_PORT: int = Field()
+    POSTGRES_DB: str = Field()
+    DATABASE_URL: Optional[str] = None
     
     # Database Pool Settings
     DATABASE_POOL_SIZE: int = Field(default=10)
@@ -92,7 +103,7 @@ class Settings(BaseSettings):
     EMAIL_FROM_NAME: str = Field(default="MowthosOS")
     
     # Logging
-    LOG_LEVEL: str = Field(default="INFO", regex="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
+    LOG_LEVEL: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
     LOG_FORMAT: str = Field(default="json")
     
     # Cluster Settings
@@ -108,14 +119,14 @@ class Settings(BaseSettings):
     def assemble_db_connection(cls, v: Optional[str], values: dict) -> str:
         if v:
             return v
-        return PostgresDsn.build(
-            scheme="postgresql+asyncpg",
-            username=values.get("POSTGRES_USER"),
-            password=values.get("POSTGRES_PASSWORD", SecretStr("")).get_secret_value(),
-            host=values.get("POSTGRES_SERVER"),
-            port=values.get("POSTGRES_PORT"),
-            path=f"{values.get('POSTGRES_DB', '')}",
-        )
+        from urllib.parse import quote_plus
+        password = values.get("POSTGRES_PASSWORD", SecretStr("")).get_secret_value()
+        encoded_password = quote_plus(password)
+        username = values.get("POSTGRES_USER")
+        host = values.get("POSTGRES_SERVER")
+        port = values.get("POSTGRES_PORT")
+        db = values.get("POSTGRES_DB")
+        return f"postgresql+asyncpg://{username}:{encoded_password}@{host}:{port}/{db}"
     
     @validator("BACKEND_CORS_ORIGINS", pre=True)
     def assemble_cors_origins(cls, v: str | List[str]) -> List[str]:
@@ -134,9 +145,8 @@ class Settings(BaseSettings):
         return timedelta(days=self.REFRESH_TOKEN_EXPIRE_DAYS)
 
 
-@lru_cache
 def get_settings() -> Settings:
-    """Get cached settings instance"""
+    """Get settings instance"""
     return Settings()
 
 

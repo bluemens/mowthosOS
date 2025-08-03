@@ -49,8 +49,9 @@ def get_url():
             database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
         return database_url
     
-    # Fall back to config file
-    return config.get_main_option("sqlalchemy.url")
+    # Use our config settings
+    from src.core.config import settings
+    return str(settings.DATABASE_URL)
 
 
 def run_migrations_offline() -> None:
