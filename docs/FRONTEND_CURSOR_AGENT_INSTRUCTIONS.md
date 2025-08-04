@@ -64,7 +64,7 @@ Implement different UI/UX flows based on user roles:
 
 #### Host Onboarding Flow:
 ```
-1. User registers → adds address → becomes Host
+1. User registers → adds address → asks property questions -> connections Mammotion Account -> creates cluster -> launches host dashboard
 2. Host connects Mammotion account
 3. Host registers devices (mowers)
 4. Host creates cluster (automatic market analysis)
@@ -73,12 +73,13 @@ Implement different UI/UX flows based on user roles:
 
 #### Neighbor Subscription Flow:
 ```
-1. User registers → adds address
+1. User registers → adds address -> selects pricing plan -> views potential clusters -> joins cluster -> launches subscriber dashboard
 2. System finds qualified clusters within range
 3. User views plans and selects subscription
 4. User adds payment method (Stripe)
 5. User joins cluster (30-day free trial starts)
 6. User becomes active member after trial
+7. User can schedule reoccuring mows and monitor mower progress
 ```
 
 ### 5. Payment Integration Requirements
@@ -87,42 +88,6 @@ Implement different UI/UX flows based on user roles:
 - Handle webhook events for subscription updates
 - Provide access to Stripe billing portal
 - Show clear subscription status and trial information
-
-### 6. Real-Time Features
-Consider implementing:
-- WebSocket connection for live mower status
-- Polling fallback for device updates
-- Push notifications for mowing events
-- Live cluster member updates
-
-### 7. Error Handling Strategy
-1. Implement global error boundary
-2. Show user-friendly error messages
-3. Log errors for debugging (consider Sentry)
-4. Implement offline mode with queue for actions
-5. Add retry logic for failed requests
-
-### 8. Performance Optimizations
-- Implement request caching for frequently accessed data
-- Use React Query or SWR for server state management
-- Lazy load components based on user role
-- Optimize map rendering for cluster boundaries
-- Implement virtual scrolling for long lists
-
-### 9. Security Considerations
-- Never expose sensitive credentials in code
-- Implement CSRF protection
-- Validate all inputs client-side and server-side
-- Use HTTPS in production
-- Implement rate limiting awareness
-- Add request signing for sensitive operations
-
-### 10. Testing Requirements
-- Unit tests for API client methods
-- Integration tests for complete flows
-- Mock API responses for development
-- Test error scenarios thoroughly
-- Verify role-based access control
 
 ## Key API Endpoints Summary
 
@@ -153,13 +118,6 @@ Consider implementing:
 - `POST /api/v1/payments/subscriptions/pre-join` - Create subscription
 - `POST /api/v1/payments/payment-methods` - Add payment method
 
-## Environment Configuration
-```env
-VITE_API_BASE_URL=http://localhost:8000
-VITE_STRIPE_PUBLIC_KEY=pk_test_...
-VITE_MAPBOX_TOKEN=pk_...
-VITE_SENTRY_DSN=https://...
-```
 
 ## Development Workflow
 1. Start with authentication implementation
@@ -172,11 +130,7 @@ VITE_SENTRY_DSN=https://...
 8. Comprehensive testing
 
 ## Additional Resources
-- Review the backend models in `src/models/`
-- Check `src/api/routes/` for complete endpoint details
-- Refer to Stripe documentation for payment integration
-- Use Mapbox documentation for map features
-- Consider Mammotion API documentation for device specifics
+-Ask questions for unclear decisions
 
 ## Success Criteria
 - Type-safe API integration with full TypeScript support
