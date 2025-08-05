@@ -87,7 +87,6 @@ class User(Base):
     hosted_clusters = relationship("Cluster", back_populates="host_user")
     cluster_memberships = relationship("ClusterMember", back_populates="user")
     subscriptions = relationship("Subscription", back_populates="user")
-    orders = relationship("Order", back_populates="user")
     api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
     audit_logs = relationship("AuditLog", back_populates="user")
     

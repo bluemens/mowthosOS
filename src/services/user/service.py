@@ -146,20 +146,38 @@ class UserService:
         """Update user information"""
         user = await self.get_by_id(user_id)
         if not user:
-            raise UserNotFoundError(f"User {user_id} not found")
+            raise UserNotFoundError(f"User with ID {user_id} not found")
         
-        # Update allowed fields
-        allowed_fields = {
-            "first_name", "last_name", "display_name", "phone_number",
-            "avatar_url", "bio", "timezone", "locale", "preferences",
-            "notification_settings", "email", "is_verified"
-        }
+        # Update fields
+        for field, value in kwargs.items():
+            if hasattr(user, field):
+                setattr(user, field, value)
         
-        for key, value in kwargs.items():
-            if key in allowed_fields:
-                setattr(user, key, value)
+        await self.db.commit()
+        await self.db.refresh(user)
         
-        user.updated_at = datetime.utcnow()
+        return user
+
+    async def update_user_role(
+        self,
+        user_id: str,
+        new_role: UserRole,
+        reason: Optional[str] = None
+    ) -> User:
+        """Update user role"""
+        user = await self.get_by_id(user_id)
+        if not user:
+            raise UserNotFoundError(f"User with ID {user_id} not found")
+        
+        # Validate role change
+        if new_role == user.role:
+            raise ValueError(f"User already has role {new_role}")
+        
+        # Store old role for audit
+        old_role = user.role
+        
+        # Update role
+        user.role = new_role
         await self.db.commit()
         await self.db.refresh(user)
         
@@ -405,8 +423,7 @@ class UserService:
             )
             .values(
                 is_active=False,
-                revoked_at=datetime.utcnow(),
-                revocation_reason="User logout"
+                revoked_at=datetime.utcnow()
             )
         )
         await self.db.execute(stmt)

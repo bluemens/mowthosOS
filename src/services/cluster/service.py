@@ -31,7 +31,9 @@ class ClusterService(BaseService):
         """Initialize the cluster service."""
         super().__init__("cluster")
         self.engine = ClusterEngine()
-        self.mapbox = MapboxService(settings.MAPBOX_ACCESS_TOKEN)
+        # Get the actual string value from SecretStr
+        mapbox_token = settings.MAPBOX_ACCESS_TOKEN.get_secret_value() if settings.MAPBOX_ACCESS_TOKEN else None
+        self.mapbox = MapboxService(mapbox_token)
         
         # Configuration
         self.max_cluster_capacity = 5

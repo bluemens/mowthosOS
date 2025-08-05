@@ -20,7 +20,7 @@ from src.core.auth import (
     get_current_user,
     get_current_active_user,
 )
-from src.services.user import UserService, InvalidCredentialsError, UserAlreadyExistsError
+from src.services.user import UserService, InvalidCredentialsError, UserAlreadyExistsError, UserNotFoundError
 from src.models.database import User, UserRole, UserAddress
 from src.core.config import settings
 
@@ -168,6 +168,10 @@ class AddressResponse(BaseModel):
     
     class Config:
         from_attributes = True
+    
+    @validator('id', pre=True)
+    def convert_uuid_to_string(cls, v):
+        return str(v) if v else v
 
 
 class MessageResponse(BaseModel):
@@ -178,6 +182,22 @@ class ChangePasswordRequest(BaseModel):
     """Request to change password"""
     old_password: str = Field(..., description="Current password")
     new_password: str = Field(..., min_length=settings.PASSWORD_MIN_LENGTH)
+
+
+class UpdateUserRoleRequest(BaseModel):
+    """Request to update user role"""
+    user_id: str = Field(..., description="ID of the user to update")
+    new_role: UserRole = Field(..., description="New role for the user")
+    reason: Optional[str] = Field(None, max_length=500, description="Reason for role change")
+
+
+class UpdateUserRoleResponse(BaseModel):
+    """Response for role update"""
+    message: str
+    user_id: str
+    old_role: str
+    new_role: str
+    updated_at: datetime
 
 
 # Utility functions
@@ -601,4 +621,53 @@ async def update_user_address(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update address: {str(e)}"
+        )
+
+
+@router.put("/users/{user_id}/role", response_model=UpdateUserRoleResponse)
+async def update_user_role(
+    user_id: str,
+    role_data: UpdateUserRoleRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update user role"""
+    user_service = UserService(db)
+    
+    try:
+        # Get the target user to get their current role
+        target_user = await user_service.get_by_id(user_id)
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        old_role = target_user.role
+        
+        # Update the user's role
+        updated_user = await user_service.update_user_role(
+            user_id=user_id,
+            new_role=role_data.new_role,
+            reason=role_data.reason
+        )
+        
+        return UpdateUserRoleResponse(
+            message=f"Successfully updated user role from {old_role} to {role_data.new_role}",
+            user_id=str(updated_user.id),
+            old_role=old_role.value,
+            new_role=role_data.new_role.value,
+            updated_at=updated_user.updated_at or datetime.utcnow()
+        )
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to update user role: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update user role"
         )

@@ -31,7 +31,17 @@ class Settings(BaseSettings):
     
     # API Settings
     API_V1_STR: str = "/api/v1"
-    BACKEND_CORS_ORIGINS: List[str] = Field(default=["http://localhost:3000"])
+    BACKEND_CORS_ORIGINS: List[str] = Field(default=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:8080", 
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8080",
+        "http://192.168.1.90:3000",
+        "http://192.168.1.14:8000",
+        "http://0.0.0.0:3000",
+        "http://0.0.0.0:8080"
+    ])
     
     # Server Settings
     HOST: str = Field(default="0.0.0.0")
@@ -103,7 +113,7 @@ class Settings(BaseSettings):
     EMAIL_FROM_NAME: str = Field(default="MowthosOS")
     
     # Logging
-    LOG_LEVEL: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
+    LOG_LEVEL: str = Field(default="DEBUG", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
     LOG_FORMAT: str = Field(default="json")
     
     # Cluster Settings

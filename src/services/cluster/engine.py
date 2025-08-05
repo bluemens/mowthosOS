@@ -37,7 +37,9 @@ class ClusterEngine:
         """Initialize the cluster engine."""
         self.all_addresses: List[Dict[str, Any]] = []
         self.ball_tree: Optional[BallTree] = None
-        self.mapbox_service = MapboxService(settings.MAPBOX_ACCESS_TOKEN)
+        # Get the actual string value from SecretStr
+        mapbox_token = settings.MAPBOX_ACCESS_TOKEN.get_secret_value() if settings.MAPBOX_ACCESS_TOKEN else None
+        self.mapbox_service = MapboxService(mapbox_token)
         
     async def load_address_data(self) -> None:
         """Load address data from CSV files for addressable market discovery."""
@@ -107,7 +109,12 @@ class ClusterEngine:
             
             # 4. Validate address with Mapbox
             address_str = f"{address.address_line1}, {address.city}, {address.state_province}"
-            validated = await mapbox_service.validate_address(address_str)
+            validated = await mapbox_service.validate_address(
+                street=address.address_line1,
+                city=address.city,
+                state=address.state_province,
+                zip_code=address.postal_code
+            )
             if not validated:
                 return {"success": False, "message": "Invalid address"}
             
@@ -118,12 +125,18 @@ class ClusterEngine:
             address.geocoded_at = datetime.now()
             
             # 6. Create cluster
+            # Generate a unique code for the cluster
+            import secrets
+            import string
+            cluster_code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
+            
             cluster = Cluster(
                 host_user_id=user_id,
                 host_address_id=address_id,
                 center_latitude=validated['latitude'],
                 center_longitude=validated['longitude'],
                 name=f"{address.address_line1} Cluster",
+                code=cluster_code,
                 status=ClusterStatus.PENDING,
                 max_members=5,
                 current_members=0
